@@ -1,14 +1,20 @@
+{% load static %}
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{% static 'core/vendor/bootstrap-5.3.8/css/bootstrap.rtl.min.css' %}">
   <title>نظام تخطيط موارد المصنع</title>
 </head>
-<body>
-  <main>
-    <h1>نظام تخطيط موارد المصنع</h1>
-    <p>تم تجهيز أساس التطبيق. ستضاف وحدات الأعمال في مراحل لاحقة.</p>
+<body class="bg-body-tertiary">
+  <main class="container py-5">
+    <section class="card border-0 shadow-sm">
+      <div class="card-body p-4 p-md-5">
+        <h1 class="h3 mb-3">نظام تخطيط موارد المصنع</h1>
+        <p class="text-body-secondary mb-0">تم تجهيز أساس التطبيق. ستضاف وحدات الأعمال في مراحل لاحقة.</p>
+      </div>
+    </section>
   </main>
 </body>
 </html>

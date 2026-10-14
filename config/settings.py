@@ -12,7 +12,10 @@ if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("Set DJANGO_SECRET_KEY when DEBUG is false.")
     SECRET_KEY = secrets.token_urlsafe(50)
-ALLOWED_HOSTS = [host for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host]
+allowed_hosts = os.environ.get("DJANGO_ALLOWED_HOSTS")
+if not DEBUG and not allowed_hosts:
+    raise ImproperlyConfigured("Set DJANGO_ALLOWED_HOSTS when DEBUG is false.")
+ALLOWED_HOSTS = [host.strip() for host in (allowed_hosts or "localhost,127.0.0.1").split(",") if host.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -49,18 +52,34 @@ TEMPLATES = [{
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-if os.environ.get("DB_ENGINE", "sqlite").lower() == "postgres":
+DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").strip().lower()
+if DB_ENGINE == "postgres":
+    required_database_settings = ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT")
+    missing_database_settings = [name for name in required_database_settings if not os.environ.get(name)]
+    if missing_database_settings:
+        missing = ", ".join(missing_database_settings)
+        raise ImproperlyConfigured(f"Set all required PostgreSQL settings: {missing}.")
+    try:
+        database_port = int(os.environ["DB_PORT"])
+    except ValueError as exc:
+        raise ImproperlyConfigured("DB_PORT must be an integer between 1 and 65535.") from exc
+    if not 1 <= database_port <= 65535:
+        raise ImproperlyConfigured("DB_PORT must be an integer between 1 and 65535.")
     DATABASES = {"default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DB_NAME", "manufacturing_erp"),
-        "USER": os.environ.get("DB_USER", ""),
-        "PASSWORD": os.environ.get("DB_PASSWORD", ""),
-        "HOST": os.environ.get("DB_HOST", "127.0.0.1"),
-        "PORT": os.environ.get("DB_PORT", "5432"),
+        "NAME": os.environ["DB_NAME"],
+        "USER": os.environ["DB_USER"],
+        "PASSWORD": os.environ["DB_PASSWORD"],
+        "HOST": os.environ["DB_HOST"],
+        "PORT": str(database_port),
         "CONN_MAX_AGE": 60,
     }}
-else:
+elif DB_ENGINE == "sqlite":
+    if not DEBUG:
+        raise ImproperlyConfigured("SQLite is for local development and tests; configure DB_ENGINE=postgres for non-debug use.")
     DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+else:
+    raise ImproperlyConfigured("DB_ENGINE must be either 'sqlite' or 'postgres'.")
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -74,6 +93,18 @@ LANGUAGES = [("ar", "العربية"), ("en", "English")]
 TIME_ZONE = "Africa/Cairo"
 USE_I18N = True
 USE_TZ = True
+
+# Non-debug use assumes HTTPS is configured at the application server or
+# reverse proxy. HSTS stays opt-in until the deployed hostname is confirmed.
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+try:
+    SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_SECURE_HSTS_SECONDS", "0"))
+except ValueError as exc:
+    raise ImproperlyConfigured("DJANGO_SECURE_HSTS_SECONDS must be a non-negative integer.") from exc
+if SECURE_HSTS_SECONDS < 0:
+    raise ImproperlyConfigured("DJANGO_SECURE_HSTS_SECONDS must be a non-negative integer.")
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

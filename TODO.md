@@ -3,9 +3,9 @@
 ## Immediate setup
 
 - [x] Initialize Git and commit the foundation.
-- [ ] Update the available Python 3.12.14 runtime to the documented 3.12.15 patch (SQLite validation used 3.12.14).
+- [ ] Re-run verification on the latest supported Python 3.12 micro release before deployment (the existing `.venv` uses 3.12.14).
 - [x] Install the pinned requirements into `.venv` and run Django checks, migrations, and tests against SQLite.
-- [ ] Install PostgreSQL 18 for local integration checks and verify the environment-based connection configuration.
+- [ ] Create/identify the dedicated PostgreSQL application database and least-privilege role, configure credentials locally, then run PostgreSQL migrations/checks/tests. PostgreSQL 18.6 is installed and accepting connections at `127.0.0.1:5432`.
 
 ## Before production use
 
