@@ -2,9 +2,9 @@
 
 ## Immediate setup
 
-- [x] Initialize Git (foundation commit is left for review).
-- [ ] Install supported Python 3.12.15 (or another supported Python/Django pair) and create `.venv`.
-- [ ] Install the pinned requirements and run `check`, migrations, and tests in that virtual environment.
+- [x] Initialize Git and commit the foundation.
+- [ ] Update the available Python 3.12.14 runtime to the documented 3.12.15 patch (SQLite validation used 3.12.14).
+- [x] Install the pinned requirements into `.venv` and run Django checks, migrations, and tests against SQLite.
 - [ ] Install PostgreSQL 18 for local integration checks and verify the environment-based connection configuration.
 
 ## Before production use

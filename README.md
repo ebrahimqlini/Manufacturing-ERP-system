@@ -21,14 +21,15 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+$env:DJANGO_DEBUG = "true"
+$env:DJANGO_SECRET_KEY = (& python -c "import secrets; print(secrets.token_urlsafe(50))")
 python manage.py check
 python manage.py migrate
 python manage.py test
 python manage.py runserver
 ```
 
-The sample `.env` selects SQLite. For PostgreSQL, set `DB_ENGINE=postgres` and provide the `DB_*` values shown in `.env.example`; supply `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS` in the deployment environment. Do not commit `.env` or real credentials.
+`.env.example` documents environment variables but Django does not load `.env` files by itself. The setup commands above set a fresh development key in the current PowerShell session and select debug mode explicitly. For PostgreSQL, set `DB_ENGINE=postgres` and provide the `DB_*` values shown in `.env.example`; set a persistent `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=false`, and the correct `DJANGO_ALLOWED_HOSTS` in the deployment environment. Do not commit `.env` or real credentials. Settings fail fast if debug is disabled and no secret key is configured.
 
 ## Migration and test workflow
 

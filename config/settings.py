@@ -1,10 +1,17 @@
 """Base settings for the Manufacturing ERP project."""
 import os
+import secrets
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "development-only-change-me")
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("Set DJANGO_SECRET_KEY when DEBUG is false.")
+    SECRET_KEY = secrets.token_urlsafe(50)
 ALLOWED_HOSTS = [host for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host]
 
 INSTALLED_APPS = [
