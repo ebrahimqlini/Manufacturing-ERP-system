@@ -144,7 +144,7 @@ Commands run in `.venv` with explicit local SQLite/debug environment:
 
 ## 7. Git and commit review
 
-Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden settings and document validation`. Before these verification fixes, `main` was clean at `70831c7`, aligned with `origin/main`. No push or history rewrite was performed. The historical dummy key finding is in section 5. The verification changes are being saved in a local follow-up commit after the passing final checks; no push or history rewrite. Local SQLite, `.venv`, and `.env` remain ignored.
+Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden settings and document validation`. Before these verification fixes, `main` was clean at `70831c7`, aligned with `origin/main`. No push or history rewrite was performed. The historical dummy key finding is in section 5. Follow-up commit `e30da87 Verify Prompt 0 foundation and PostgreSQL readiness` contains these verification changes. Branch `main` is one local commit ahead of `origin/main`; no push or history rewrite. Local SQLite, `.venv`, and `.env` remain ignored.
 
 ## 8. Fixes in this verification pass
 
@@ -162,3 +162,16 @@ Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden se
 3. `check --deploy` remains warning-only until TLS/proxy, secure cookies, and HSTS policy are decided.
 4. The tested Python patch is 3.12.14, not the recommended 3.12.15 micro release.
 5. Commit `0481df6` retains a historical synthetic development key placeholder; history is intentionally not rewritten.
+
+## 10. Exact manual actions
+
+1. In pgAdmin, inspect existing databases and roles. Identify an existing ERP-specific database/role or create a dedicated database and least-privilege non-superuser application role. Do not use the `postgres` superuser for application traffic. Select/set its password locally; do not share it in chat or commit it. No system installation or service changes are needed.
+2. In the PowerShell session used to run Django, set `DB_ENGINE=postgres`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST=127.0.0.1`, `DB_PORT=5432`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, and `DJANGO_DEBUG=false`. The project does not auto-load `.env`. Keep credentials in the local environment.
+3. Before any migration, verify that `DB_NAME` is the intended dedicated database and review `.venv\Scripts\python.exe manage.py migrate --plan` with those exact settings. If it is not a disposable/identified ERP database, stop before migration.
+4. Run `manage.py check --database default`, `showmigrations`, and `migrate --plan` against that database. Apply migrations only after confirming the target and plan. Then exercise a temporary record in a transaction and roll it back, and run tests with a dedicated PostgreSQL test database. Django's test runner may need test-database creation permission; provide it only to a dedicated test role if required, not casually to the normal runtime role.
+5. After database checks, configure the actual HTTPS proxy/host and decide whether/when to enable HSTS. Non-debug settings already turn on HTTPS redirect and secure session/CSRF cookies; HSTS remains off until the deployment hostname/proxy is known.
+6. Optionally update the project venv to Python 3.12.15 (or another current supported patch) only after scheduling that compatibility check. Python 3.12.14 is the interpreter that was actually tested; no system Python was changed.
+
+## 11. Final decision
+
+**NOT READY FOR PROMPT 1.** Prompt 0 code and SQLite verification pass, but actual PostgreSQL authentication, database identity, migrations, a real PostgreSQL operation, and PostgreSQL test-suite results remain unverified. The database configuration is intentionally strict, and no unknown database was modified. The next required step is to complete the local database/role configuration and repeat the PostgreSQL-specific checks above. No Prompt 1 feature work was started.
