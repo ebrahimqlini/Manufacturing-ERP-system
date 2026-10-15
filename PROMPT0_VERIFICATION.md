@@ -5,9 +5,9 @@ Scope: verify the original Prompt 0 foundation only. No Prompt 1 or business-mod
 
 ## 1. Executive summary
 
-The Django foundation passes SQLite checks and its eight-test suite. PostgreSQL 18.6 is installed, the Windows service is running, and the server accepts TCP connections on the verified local port. The ERP project has no database name, application role, or password configured, so PostgreSQL authentication, Django PostgreSQL migrations, a real database operation, and PostgreSQL tests were not attempted. The project now fails closed instead of silently using SQLite when PostgreSQL settings are incomplete.
+The foundation passes both SQLite and PostgreSQL checks. PostgreSQL 18.6 is running; `paper_factory` and non-superuser role `paper_factory_app` were authenticated and inspected. Built-in migrations applied safely to the verified empty application database, a temporary PostgreSQL write/read rolled back, and all eight tests passed on a separate preserved PostgreSQL test database.
 
-**Decision: NOT READY FOR PROMPT 1 yet.** Complete the manual database/role configuration in section 10 of the final report, then verify Django against that isolated PostgreSQL database.
+**Decision: READY TO CLOSE PROMPT 0 AND PROCEED TO PROMPT 1.** Replace the short local database password with a strong unique one before deployment or exposing PostgreSQL beyond local development.
 
 ## 2. Original Prompt 0 checklist
 
@@ -100,12 +100,12 @@ Statuses apply to the requirement as written. `NOT APPLICABLE` means the origina
 | 2 | PASS | Installed server/client 18.6; active port 5432; `listen_addresses=*`; `pg_isready -h 127.0.0.1 -p 5432` says accepting connections. Host authentication config uses SCRAM-SHA-256. |
 | 3 | PASS | `.venv` contains Psycopg 3.3.6 and `psycopg-binary` 3.3.6; import resolves inside `.venv`. `pip check` passes. |
 | 4 | PASS | `config/settings.py` reads `DB_ENGINE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, and `DB_PORT` from environment. It fails on missing values/unknown engine and will not silently choose SQLite for non-debug runs. |
-| 5 | NOT TESTED | No ERP `DB_*` environment variables, project `.env`, pgpass file, or pg_service file exists. The ERP database name, app role and password are unknown; existence/authentication were not guessed. |
-| 6 | NOT TESTED | No real Django-to-PostgreSQL login was attempted. `pg_isready` verifies server readiness only, not credentials. |
-| 7 | NOT TESTED | No migrations were applied to PostgreSQL because the target database/role are not identified. Project has no custom migrations; Django built-ins are the only migration scope. |
-| 8 | NOT TESTED | `check --database default` passed only with explicit SQLite test settings. PostgreSQL DB checks require app credentials. |
-| 9 | NOT TESTED | No temporary record was written to PostgreSQL; no dedicated test DB is configured. |
-| 10 | NOT TESTED | Django suite has not run against PostgreSQL. SQLite test result is not represented as PostgreSQL coverage. |
+| 5 | PASS | Authenticated connection to `paper_factory` as `paper_factory_app` succeeded. The role is non-superuser and lacks `CREATEDB`/`CREATEROLE`; credentials are not stored in project files. |
+| 6 | PASS | Django `check --database default` connected to PostgreSQL successfully. |
+| 7 | PASS | The target was verified empty; the reviewed plan contained only standard Django migrations, which applied successfully. |
+| 8 | PASS | PostgreSQL `check --database default` passed with no issues. |
+| 9 | PASS | A temporary PostgreSQL table accepted a row, read it back, and rolled back in the same transaction. |
+| 10 | PASS | Full suite passed on dedicated PostgreSQL test DB with `--keepdb`: 8 run, 8 passed, 0 failed, 0 skipped. |
 
 ## 4. Python and dependencies
 
@@ -137,14 +137,14 @@ Commands run in `.venv` with explicit local SQLite/debug environment:
 - `python manage.py showmigrations` — built-in admin/auth/contenttypes/sessions migrations applied; no `core` migration exists.
 - `python manage.py migrate --plan` — no pending operations.
 - `python manage.py migrate --noinput` — passed; no migrations to apply to the identified workspace SQLite database.
-- `python manage.py test` — 8 run, 8 passed, 0 failed, 0 skipped; SQLite test DB created/destroyed by Django.
+- `python manage.py test` — SQLite: 8 run, 8 passed, 0 failed, 0 skipped. `python manage.py test --keepdb` — PostgreSQL: 8 run, 8 passed, 0 failed, 0 skipped; dedicated PostgreSQL test database preserved.
 - `python manage.py findstatic core/vendor/bootstrap-5.3.8/css/bootstrap.rtl.min.css` — local asset found.
 - `python manage.py check --deploy` — command exit 0, but 5 deployment warnings under the local development settings; production configuration unavailable.
-- PostgreSQL checks/migrations/tests were not run due missing application database credentials. No target PostgreSQL database was altered.
+- PostgreSQL authentication, reviewed built-in migrations, rollback-safe write/read, and tests were completed. No business models or workflows were added.
 
 ## 7. Git and commit review
 
-Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden settings and document validation`. Before these verification fixes, `main` was clean at `70831c7`, aligned with `origin/main`. No push or history rewrite was performed. The historical dummy key finding is in section 5. Follow-up commit `e30da87 Verify Prompt 0 foundation and PostgreSQL readiness` contains these verification changes. Branch `main` is one local commit ahead of `origin/main`; no push or history rewrite. Local SQLite, `.venv`, and `.env` remain ignored.
+Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden settings and document validation`. Before these verification fixes, `main` was clean at `70831c7`, aligned with `origin/main`. No push or history rewrite was performed. The historical dummy key finding is in section 5. Follow-up commits `e30da87` and `b16e2f7` are local; no push or history rewrite. This final test/documentation fix is currently uncommitted. Local SQLite and `.venv` are ignored; `.env` is absent and ignored.
 
 ## 8. Fixes in this verification pass
 
@@ -155,23 +155,37 @@ Commits inspected: `0481df6 Set up Django ERP foundation` and `70831c7 Harden se
 - Dependency manifest pins resolved runtime dependency versions.
 - Settings tests cover missing PostgreSQL values, bad engine/port, missing production secret/hosts, SQLite in non-debug mode, and non-debug HTTPS/cookie defaults.
 
-## 9. Remaining blockers
+## 9. Remaining deployment considerations
 
-1. PostgreSQL ERP database name and non-superuser application role/password are not configured or authenticated.
-2. PostgreSQL-specific migration, `check --database`, temporary record, and Django test-suite validation cannot run until item 1 is resolved and a dedicated/test database is identified.
-3. `check --deploy` remains warning-only until TLS/proxy, secure cookies, and HSTS policy are decided.
-4. The tested Python patch is 3.12.14, not the recommended 3.12.15 micro release.
-5. Commit `0481df6` retains a historical synthetic development key placeholder; history is intentionally not rewritten.
+1. Replace the short local database password with a strong unique password before deployment or exposing PostgreSQL beyond local development.
+2. PostgreSQL listens on all interfaces; confirm Windows firewall/network exposure before deployment.
+3. Configure the deployment HTTPS proxy/host and decide HSTS duration before deployment. Non-debug mode enables HTTPS redirects and secure session/CSRF cookies; HSTS remains opt-in.
+4. Python 3.12.14 was tested; test the latest supported patch before deployment. The originally documented 3.12.15 was a recommendation, not a pin.
+5. Historical commit `0481df6` included a synthetic development key placeholder, removed in `70831c7`; history was intentionally not rewritten.
 
 ## 10. Exact manual actions
 
-1. In pgAdmin, inspect existing databases and roles. Identify an existing ERP-specific database/role or create a dedicated database and least-privilege non-superuser application role. Do not use the `postgres` superuser for application traffic. Select/set its password locally; do not share it in chat or commit it. No system installation or service changes are needed.
-2. In the PowerShell session used to run Django, set `DB_ENGINE=postgres`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST=127.0.0.1`, `DB_PORT=5432`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, and `DJANGO_DEBUG=false`. The project does not auto-load `.env`. Keep credentials in the local environment.
-3. Before any migration, verify that `DB_NAME` is the intended dedicated database and review `.venv\Scripts\python.exe manage.py migrate --plan` with those exact settings. If it is not a disposable/identified ERP database, stop before migration.
-4. Run `manage.py check --database default`, `showmigrations`, and `migrate --plan` against that database. Apply migrations only after confirming the target and plan. Then exercise a temporary record in a transaction and roll it back, and run tests with a dedicated PostgreSQL test database. Django's test runner may need test-database creation permission; provide it only to a dedicated test role if required, not casually to the normal runtime role.
-5. After database checks, configure the actual HTTPS proxy/host and decide whether/when to enable HSTS. Non-debug settings already turn on HTTPS redirect and secure session/CSRF cookies; HSTS remains off until the deployment hostname/proxy is known.
-6. Optionally update the project venv to Python 3.12.15 (or another current supported patch) only after scheduling that compatibility check. Python 3.12.14 is the interpreter that was actually tested; no system Python was changed.
+Database setup, migrations, temporary read/write check, and PostgreSQL tests are complete. No manual database action is needed to close Prompt 0. Before deployment, change the short local password to a strong unique value and configure the actual HTTPS proxy/host and HSTS policy. The project does not auto-load `.env`; set process environment variables or deliberately add a dotenv loader if file-based configuration is desired. No system installation or service changes were made.
 
 ## 11. Final decision
+**READY TO CLOSE PROMPT 0 AND PROCEED TO PROMPT 1.** Actual PostgreSQL authentication, safe migrations, a rollback-safe write/read, and the complete eight-test suite against a dedicated PostgreSQL test database passed. No Prompt 1 features were started.
 
-**NOT READY FOR PROMPT 1.** Prompt 0 code and SQLite verification pass, but actual PostgreSQL authentication, database identity, migrations, a real PostgreSQL operation, and PostgreSQL test-suite results remain unverified. The database configuration is intentionally strict, and no unknown database was modified. The next required step is to complete the local database/role configuration and repeat the PostgreSQL-specific checks above. No Prompt 1 feature work was started.
+## PostgreSQL follow-up (2026-10-15)
+
+This section supersedes the earlier PostgreSQL-unverified statements above.
+
+- Service `postgresql-x64-18` is Running/Automatic. `pg_isready -h 127.0.0.1 -p 5432` reports accepting connections; PostgreSQL server version is 18.6.
+- Authenticated `psql` connection to database `paper_factory` as role `paper_factory_app` succeeded. Credentials were supplied only through the process environment for these checks and were not printed in output or saved in files.
+- Catalog inspection verified `paper_factory` is owned by `paper_factory_app`; the role is not a superuser and has neither `CREATEDB` nor `CREATEROLE`. It has `USAGE` and `CREATE` on `public`. Before migrations, the application database contained no user tables.
+- Using `.venv\Scripts\python.exe` with the actual PostgreSQL connection values in a temporary process environment: `manage.py check --database default` passed; `makemigrations --check --dry-run` reported no model changes; `showmigrations` showed the built-in admin/auth/contenttypes/sessions migrations unapplied; `migrate --plan` showed only those standard Django migrations.
+- After reviewing the empty target and non-destructive built-in migration plan, `manage.py migrate --noinput` applied all built-in migrations successfully. A following `check --database default` passed, all built-in migrations showed `[X]`, and a following `migrate --plan` reported no pending operations.
+- A PostgreSQL read/write smoke test created a temporary table, inserted/read a row, and rolled back its transaction. It passed and left no persistent probe table.
+- The first PostgreSQL `manage.py test` attempt was blocked because the default `test_paper_factory` database did not yet exist and the runtime role correctly has `CREATEDB=false`. No tests ran on that attempt.
+- After an administrator created `test_paper_factory` with owner `paper_factory_app`, read-only inspection verified it was empty and owned by that role. `manage.py test --keepdb` then passed on PostgreSQL: 8 run, 8 passed, 0 failed, 0 skipped. `--keepdb` preserved this dedicated test database.
+- The first PostgreSQL test run also caught a test assumption: the home-page request used HTTP while non-debug settings enforce HTTPS. The test was corrected to request HTTPS; the full rerun passed.
+- The eight-test suite also passes on SQLite (8 run, 8 passed, 0 failed, 0 skipped). SQLite and PostgreSQL results are reported separately.
+- `.env` is absent and remains ignored/untracked. PostgreSQL values were provided only to individual verification processes; the project does not auto-load `.env`.
+
+### Final decision
+
+**READY TO CLOSE PROMPT 0 AND PROCEED TO PROMPT 1.** The actual PostgreSQL application database authenticated successfully, was verified empty before safe built-in migrations, passed a rollback-safe read/write operation, and passed the complete eight-test suite on a separate preserved PostgreSQL test database. SQLite checks also pass. No Prompt 1 features were started. Replace the short password used for local verification with a strong unique value before deployment or exposing the service beyond local development. No password value is recorded in this report.
