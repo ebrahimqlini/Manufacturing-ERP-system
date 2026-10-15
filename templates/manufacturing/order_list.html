@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}أوامر الإنتاج{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><h1 class="h3 mb-0">أوامر الإنتاج</h1><div>{% if user.is_staff %}<a class="btn btn-primary" href="{% url 'manufacturing:order_add' %}">أمر جديد</a> <a class="btn btn-outline-secondary" href="{% url 'manufacturing:configuration' %}">إعداد التصنيع</a>{% endif %}</div></div>
+<form method="get" class="row g-2 mb-3"><div class="col-md-4"><select name="status" class="form-select"><option value="">كل الحالات</option>{% for value,label in statuses %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div class="col-md-4"><select name="line" class="form-select"><option value="">كل الخطوط</option>{% for line in lines %}<option value="{{ line.pk }}" {% if selected_line == line.pk|stringformat:'s' %}selected{% endif %}>{{ line.name_ar }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-outline-primary">تصفية</button></div></form>
+<div class="table-responsive"><table class="table table-striped"><thead><tr><th>رقم الأمر</th><th>المنتج</th><th>خط الإنتاج</th><th>المخطط</th><th>الحالة</th></tr></thead><tbody>
+{% for order in orders %}<tr><td><a href="{% url 'manufacturing:order_detail' order.pk %}"><bdi dir="ltr">{{ order.order_number }}</bdi></a></td><td>{{ order.product.name_ar }} <bdi dir="ltr">{{ order.product.sku }}</bdi></td><td>{{ order.production_line.name_ar }}</td><td>{{ order.planned_quantity }} {{ order.planned_unit }}</td><td>{{ order.get_status_display }}</td></tr>{% empty %}<tr><td colspan="5" class="text-center">لا توجد أوامر إنتاج.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

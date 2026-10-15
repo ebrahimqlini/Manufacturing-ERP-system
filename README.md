@@ -1,6 +1,8 @@
-# Manufacturing ERP foundation
+# Paper-products factory ERP foundation
 
-Minimal Django foundation for a paper cup manufacturer. This phase establishes the project shell, configuration, Arabic RTL landing page, environment-based PostgreSQL configuration, and a smoke test. Factory workflows are intentionally deferred.
+Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes.
+
+The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers and cost calculations remain out of scope until factory and accounting policies are confirmed. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
 
 ## Runtime baseline
 
@@ -31,6 +33,7 @@ $env:DJANGO_DEBUG = "true"
 $env:DJANGO_SECRET_KEY = (& python -c "import secrets; print(secrets.token_urlsafe(50))")
 python manage.py check
 python manage.py migrate
+python manage.py createsuperuser
 python manage.py test
 python manage.py runserver
 ```
@@ -49,14 +52,15 @@ The checked-in dependency manifest pins Django, Psycopg, and their resolved runt
 
 ## Migration and test workflow
 
-After changing models, create migrations with `python manage.py makemigrations`, inspect the generated migration, then apply with `python manage.py migrate`. Review migration SQL with `python manage.py sqlmigrate <app> <migration>` where useful. Run `python manage.py check`, `python manage.py makemigrations --check --dry-run`, and `python manage.py test` before integrating a change. SQLite tests are fast local smoke/unit tests; run the suite against a dedicated PostgreSQL test database for integration coverage. The runtime app role should not have `CREATEDB`; have an administrator create the disposable `test_<DB_NAME>` database with the app role as owner, verify it is empty, then run `python manage.py test --keepdb` so Django reuses and preserves that dedicated database. Never point tests at the application or production database. Production migrations must be backed up and applied as an explicit release step; do not edit an already-applied migration to change deployed schema.
+After changing models, create migrations with `python manage.py makemigrations`, inspect the generated migration, then apply with `python manage.py migrate`. Review migration SQL with `python manage.py sqlmigrate <app> <migration>` where useful. Run `python manage.py check`, `python manage.py makemigrations --check --dry-run`, and `python manage.py test`. SQLite tests are fast local smoke/unit tests; run the suite against a dedicated PostgreSQL test database for transaction and constraint coverage. The runtime app role should not have `CREATEDB`; have an administrator create the dedicated `test_<DB_NAME>` database with the app role as owner, verify it is empty, then run `python manage.py test --keepdb` so Django reuses and preserves that database. Never point tests at the application or production database. Production migrations must be backed up and applied as an explicit release step; do not edit an already-applied migration to change deployed schema.
 
 ## Planned app boundaries
 
-`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds cross-cutting primitives only. Planned domain apps are `catalog`, `inventory`, `purchasing`, `manufacturing`, `sales`, `accounting`, and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md). Apps will be introduced in the phase that implements their first approved behavior.
+`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. Implemented domain apps are `catalog`, `inventory`, and `manufacturing`. Planned apps are `accounting`, `purchasing`, `sales`, and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
 
 ## Project records
 
 - [DECISIONS.md](DECISIONS.md): architecture and open policy decisions.
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md): current phase and verified state.
 - [TODO.md](TODO.md): ordered next work.
+- [PROMPT_SPECS.md](PROMPT_SPECS.md): implemented Prompt 1 contract and later implementation scope and acceptance tests.

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}أرصدة المخزون{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">أرصدة مستنتجة من دفتر الحركات</h1>
+<div class="alert alert-info">يمنع النظام ترحيل أي حركة تجعل الرصيد الفعلي في موقع التخزين سالبًا.</div>
+<form class="row g-2 mb-3"><div class="col-md-3"><input class="form-control" name="q" value="{{ q }}" placeholder="كود أو اسم الصنف"></div><div class="col-md-3"><select class="form-select" name="category"><option value="">كل الفئات</option>{% for c in categories %}<option value="{{ c.pk }}" {% if category_id == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name_ar }}</option>{% endfor %}</select></div><div class="col-md-4"><select class="form-select" name="warehouse"><option value="">كل المخازن</option>{% for w in warehouses %}<option value="{{ w.pk }}" {% if warehouse_id == w.pk|stringformat:"s" %}selected{% endif %}>{{ w.name_ar }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-primary w-100">تصفية</button></div></form>
+<div class="table-responsive"><table class="table table-striped bg-white"><thead><tr><th>الصنف</th><th>الفئة</th><th>المخزن</th><th>الموقع</th><th>الرصيد</th><th>الوحدة الأساسية</th></tr></thead><tbody>{% for p,l,q in rows %}<tr {% if q < 0 %}class="table-warning"{% endif %}><td><bdi>{{ p.sku }}</bdi> — {{ p.name_ar }}</td><td>{{ p.category.name_ar }}</td><td>{{ l.warehouse.name_ar }}</td><td>{{ l.name_ar }} (<bdi>{{ l.code }}</bdi>)</td><td>{{ q }}</td><td>{{ p.base_uom.code }}</td></tr>{% empty %}<tr><td colspan="6">لا توجد أصناف أو مواقع مطابقة.</td></tr>{% endfor %}</tbody></table></div>{% include "pagination.html" with page_obj=page %}
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}دليل الأصناف{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3"><h1 class="h3">دليل الأصناف المشترك</h1>{% if user.is_staff %}<a class="btn btn-primary" href="{% url 'catalog:product_add' %}">إضافة صنف</a>{% endif %}</div>
+<form class="row g-2 mb-3"><div class="col-md-6"><input class="form-control" name="q" value="{{ q }}" placeholder="بحث بالكود أو الاسم"></div><div class="col-md-4"><select class="form-select" name="category"><option value="">كل الفئات</option>{% for c in categories %}<option value="{{ c.pk }}" {% if category_id == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name_ar }}</option>{% endfor %}</select></div><div class="col-md-2"><button class="btn btn-outline-primary w-100">تصفية</button></div></form>
+<div class="table-responsive"><table class="table table-striped bg-white"><thead><tr><th>الكود</th><th>الصنف</th><th>الفئة</th><th>الوحدة الأساسية</th><th>الحالة</th><th></th></tr></thead><tbody>{% for p in page %}<tr><td><bdi class="ltr">{{ p.sku }}</bdi></td><td>{{ p.name_ar }}</td><td>{{ p.category.name_ar }}</td><td>{{ p.base_uom.name_ar }}</td><td>{{ p.active|yesno:"نشط,غير نشط" }}</td><td>{% if user.is_staff %}<a href="{% url 'catalog:product_edit' p.pk %}">تعديل</a>{% endif %}</td></tr>{% empty %}<tr><td colspan="6">لا توجد أصناف.</td></tr>{% endfor %}</tbody></table></div>
+{% include "pagination.html" with page_obj=page %}
+{% endblock %}

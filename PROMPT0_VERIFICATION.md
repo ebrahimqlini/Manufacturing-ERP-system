@@ -3,6 +3,8 @@
 Date: 2026-10-15
 Scope: verify the original Prompt 0 foundation only. No Prompt 1 or business-module work was started.
 
+Subsequent scope-planning update: the factory has paper-cup and paper-fiber container/tray lines. Their shared-module plan and future acceptance tests are documented in [PROMPT_SPECS.md](PROMPT_SPECS.md); the second line's actual process remains unconfirmed. This update does not change the historical Prompt 0 verification or implement business functionality.
+
 ## 1. Executive summary
 
 The foundation passes both SQLite and PostgreSQL checks. PostgreSQL 18.6 is running; `paper_factory` and non-superuser role `paper_factory_app` were authenticated and inspected. Built-in migrations applied safely to the verified empty application database, a temporary PostgreSQL write/read rolled back, and all eight tests passed on a separate preserved PostgreSQL test database.

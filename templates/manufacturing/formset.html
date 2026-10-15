@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ title }}</h1>
+{% if locked %}<div class="alert alert-warning">الإصدار مستخدم في أمر مطلق؛ أنشئ إصدارًا جديدًا بدل تعديل هذا الإصدار.</div>{% endif %}
+<form method="post" class="card card-body gap-3">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <hr><h2 class="h5">{{ formset_title }}</h2>
+  {{ formset.management_form }}
+  {% for child in formset %}<div class="border rounded p-3">{{ child.as_p }}</div>{% endfor %}
+  <button class="btn btn-primary" {% if locked %}disabled{% endif %}>حفظ</button>
+</form>
+{% endblock %}

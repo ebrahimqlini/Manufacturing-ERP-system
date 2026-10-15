@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}تسجيل الدخول{% endblock %}
+{% block content %}
+<div class="card mx-auto" style="max-width:520px"><div class="card-body">
+  <h1 class="h4 mb-3">تسجيل الدخول</h1>
+  {% if form.errors %}<div class="alert alert-danger">اسم المستخدم أو كلمة المرور غير صحيحة.</div>{% endif %}
+  <form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="btn btn-primary">دخول</button></form>
+</div></div>
+{% endblock %}

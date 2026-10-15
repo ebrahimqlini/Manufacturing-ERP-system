@@ -25,6 +25,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "core",
+    "catalog",
+    "inventory",
+    "manufacturing",
 ]
 
 MIDDLEWARE = [
@@ -108,3 +111,6 @@ if SECURE_HSTS_SECONDS < 0:
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGIN_URL = "login"
+LOGIN_REDIRECT_URL = "inventory:dashboard"
+LOGOUT_REDIRECT_URL = "core:home"

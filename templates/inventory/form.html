@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}<h1 class="h3 mb-4">{{ title }}</h1><form method="post" class="card card-body">{% csrf_token %}{{ form.as_p }}<div><button class="btn btn-primary">{{ submit_label|default:"حفظ" }}</button> <a class="btn btn-outline-secondary" href="{% url 'inventory:dashboard' %}">إلغاء</a></div></form>{% endblock %}

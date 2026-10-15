@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ title }}</h1>
+{% if help_text %}<div class="alert alert-info">{{ help_text }}</div>{% endif %}
+<form method="post" class="card card-body gap-3">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <div class="d-flex gap-2"><button class="btn btn-primary">حفظ</button><a class="btn btn-outline-secondary" href="javascript:history.back()">رجوع</a></div>
+</form>
+{% endblock %}
