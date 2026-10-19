@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}تفصيل أوامر الإنتاج — {{ period.year }}/{{ period.month|stringformat:"02d" }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h4 mb-0">تفصيل أوامر الإنتاج حسب المنتج</h1>
+    <span class="small text-muted">فترة {{ period.year }}/{{ period.month|stringformat:"02d" }} — {{ period.get_status_display }}</span>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_detail' period.pk %}">عودة لتقرير الشهر</a>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة الشهور</a>
+  </div>
+</div>
+
+{% for group in groups %}
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <div>
+      <strong>{{ group.product.name_ar }}</strong>
+      <bdi dir="ltr" class="text-muted small">({{ group.product.sku }})</bdi>
+      {% if group.production_line %}<span class="badge bg-light text-dark">{{ group.production_line.name_ar }}</span>{% endif %}
+    </div>
+    <span class="small text-muted">عدد الأوامر: {{ group.entries|length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>رقم أمر الإنتاج</th>
+          <th>الجيد</th>
+          <th>الهالك</th>
+          <th>تكلفة المواد الفعلية</th>
+          <th>تكلفة المواد المحمّلة على الجيد</th>
+          <th>تكلفة المواد المنفصلة عن الهالك</th>
+          <th>العمالة</th>
+          <th>الكهرباء</th>
+          <th>المياه</th>
+          <th>أخرى</th>
+          <th>إجمالي التكلفة</th>
+          <th>تكلفة الوحدة الجيدة</th>
+          <th>حالة الاحتساب</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in group.entries %}
+        <tr>
+          <td><bdi dir="ltr">{{ entry.order.order_number }}</bdi></td>
+          <td>{{ entry.good_units_produced|floatformat:4 }} {{ group.product.base_uom.code }}</td>
+          <td>{{ entry.scrap_units_produced|floatformat:4 }}</td>
+          <td>{{ entry.actual_material_cost|floatformat:2 }} ج.م</td>
+          <td class="text-success">{{ entry.material_cost_assigned_to_good|floatformat:2 }} ج.م</td>
+          <td class="text-warning">{{ entry.waste_material_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_labor_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_electricity_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_water_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_other_cost|floatformat:2 }} ج.م</td>
+          <td><strong>{{ entry.total_production_cost|floatformat:2 }} ج.م</strong></td>
+          <td>{% if entry.cost_per_good_unit %}{{ entry.cost_per_good_unit|floatformat:4 }} ج.م{% else %}—{% endif %}</td>
+          <td>{% if entry.calculation_status == 'INCOMPLETE' %}<span class="badge bg-danger small">بيانات ناقصة</span>{% else %}<span class="badge bg-success small">مكتمل</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        <tr class="table-secondary fw-bold">
+          <td>إجمالي المنتج</td>
+          <td>{{ group.totals.good|floatformat:4 }} {{ group.product.base_uom.code }}</td>
+          <td>{{ group.totals.scrap|floatformat:4 }}</td>
+          <td>{{ group.totals.material|floatformat:2 }} ج.م</td>
+          <td class="text-success">{{ group.totals.assigned|floatformat:2 }} ج.م</td>
+          <td class="text-warning">{{ group.totals.waste|floatformat:2 }} ج.م</td>
+          <td>{{ group.totals.labor|floatformat:2 }} ج.م</td>
+          <td>{{ group.totals.electricity|floatformat:2 }} ج.م</td>
+          <td>{{ group.totals.water|floatformat:2 }} ج.م</td>
+          <td>{{ group.totals.other|floatformat:2 }} ج.م</td>
+          <td>{{ group.totals.total|floatformat:2 }} ج.م</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% empty %}
+<div class="alert alert-info">لا توجد تكاليف لأوامر إنتاج في هذه الفترة.</div>
+{% endfor %}
+{% endblock %}

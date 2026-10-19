@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "catalog",
     "inventory",
     "manufacturing",
+    "costing",
 ]
 
 MIDDLEWARE = [
@@ -76,6 +77,9 @@ if DB_ENGINE == "postgres":
         "HOST": os.environ["DB_HOST"],
         "PORT": str(database_port),
         "CONN_MAX_AGE": 60,
+        "TEST": {
+            "NAME": os.environ.get("DB_TEST_NAME", "test_paper_factory"),
+        },
     }}
 elif DB_ENGINE == "sqlite":
     if not DEBUG:

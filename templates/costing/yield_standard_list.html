@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}معايير إنتاجية الرول{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">معايير إنتاجية الرولات (Roll Yield Standards)</h1>
+    <span class="text-muted small">تحديد عدد الكراتين المتوقعة من كل رول ورق لاحتساب نسب العجز والفاقد الفعلي في الإنتاج</span>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+    {% if user.is_staff %}
+      <a class="btn btn-primary" href="{% url 'costing:yield_standard_create' %}">إضافة معيار إنتاجية</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>المنتج التام</th>
+          <th>المادة الخام (الرول)</th>
+          <th>خط الإنتاج</th>
+          <th>الكراتين المتوقعة لكل رول</th>
+          <th>وحدة الرول</th>
+          <th>وحدة الكرتونة</th>
+          <th>الحالة</th>
+          <th>إجراء</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for std in standards %}
+        <tr>
+          <td><strong>{{ std.product.name_ar }}</strong> (<bdi dir="ltr">{{ std.product.sku }}</bdi>)</td>
+          <td>{{ std.raw_material.name_ar }} (<bdi dir="ltr">{{ std.raw_material.sku }}</bdi>)</td>
+          <td>{{ std.production_line.name_ar|default:"عام لجميع الخطوط" }}</td>
+          <td><strong class="text-primary">{{ std.expected_cartons_per_roll }}</strong></td>
+          <td>{{ std.roll_unit.name_ar }}</td>
+          <td>{{ std.carton_unit.name_ar }}</td>
+          <td>
+            {% if std.active %}<span class="badge bg-success">نشط</span>{% else %}<span class="badge bg-secondary">غير نشط</span>{% endif %}
+          </td>
+          <td>
+            {% if user.is_staff %}
+              <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:yield_standard_edit' std.pk %}">تعديل</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="text-center py-4 text-muted">لم يتم تسجيل معايير إنتاجية للرولات بعد.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

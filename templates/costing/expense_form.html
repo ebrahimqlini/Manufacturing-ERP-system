@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white"><h1 class="h5 mb-0">{{ title }}</h1></div>
+      <div class="card-body">
+        <form method="post">
+          {% csrf_token %}
+          {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">{{ form.year.label }}</label>
+              {{ form.year }}
+              {% if form.year.errors %}<div class="text-danger small">{{ form.year.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.month.label }}</label>
+              {{ form.month }}
+              {% if form.month.errors %}<div class="text-danger small">{{ form.month.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.expense_type.label }}</label>
+              {{ form.expense_type }}
+              {% if form.expense_type.errors %}<div class="text-danger small">{{ form.expense_type.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.amount.label }}</label>
+              {{ form.amount }}
+              <div class="form-text small">سجّل 0.00 فقط عند تأكيد عدم وجود مصروف فعلي؛ المعدل يُدخل بالقيمة الفعلية للفاتورة.</div>
+              {% if form.amount.errors %}<div class="text-danger small">{{ form.amount.errors }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+              <label class="form-label">{{ form.description.label }}</label>
+              {{ form.description }}
+              {% if form.description.errors %}<div class="text-danger small">{{ form.description.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.scope.label }}</label>
+              {{ form.scope }}
+              {% if form.scope.errors %}<div class="text-danger small">{{ form.scope.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.production_line.label }}</label>
+              {{ form.production_line }}
+              <div class="form-text small">مطلوب عند اختيار نطاق خاص بخط إنتاج</div>
+              {% if form.production_line.errors %}<div class="text-danger small">{{ form.production_line.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.product.label }}</label>
+              {{ form.product }}
+              <div class="form-text small">مطلوب عند اختيار نطاق خاص بمنتج</div>
+              {% if form.product.errors %}<div class="text-danger small">{{ form.product.errors }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+              <label class="form-label">{{ form.notes.label }}</label>
+              {{ form.notes }}
+              {% if form.notes.errors %}<div class="text-danger small">{{ form.notes.errors }}</div>{% endif %}
+            </div>
+          </div>
+          <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="submit" class="btn btn-primary">حفظ المصروف</button>
+            <a class="btn btn-outline-secondary" href="{% url 'costing:expense_list' %}">إلغاء</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

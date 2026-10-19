@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}تفاصيل تكلفة {{ entry.product.name_ar }} — {{ period.year }}/{{ period.month|stringformat:"02d" }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">تفاصيل تكلفة: {{ entry.product.name_ar }} <bdi dir="ltr">({{ entry.product.sku }})</bdi></h1>
+    <span class="text-muted small">فترة تكاليف شهر {{ period.year }} / {{ period.month|stringformat:"02d" }} — خط الإنتاج: {{ entry.production_line.name_ar|default:"عام" }}</span>
+  </div>
+  <div>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_detail' period.pk %}">العودة لتقرير الشهر</a>
+  </div>
+</div>
+
+<div class="alert alert-secondary shadow-sm small">
+  <strong>طريقة تقييم المواد:</strong> {{ period.get_material_valuation_method_display }}.
+  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل بيانات تكلفة.
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3 col-6">
+    <div class="card card-body shadow-sm">
+      <span class="text-muted small">الوحدات الجيدة المنتجة</span>
+      <strong class="h4 mb-0 text-success">{{ entry.good_units_produced|floatformat:0 }} {{ entry.product.base_uom.code }}</strong>
+    </div>
+  </div>
+  <div class="col-md-3 col-6">
+    <div class="card card-body shadow-sm">
+      <span class="text-muted small">الهالك المسجل</span>
+      <strong class="h4 mb-0 text-danger">{{ entry.scrap_units_produced|floatformat:0 }} {{ entry.product.base_uom.code }}</strong>
+    </div>
+  </div>
+  <div class="col-md-3 col-6">
+    <div class="card card-body shadow-sm">
+      <span class="text-muted small">إجمالي التكلفة المحتسبة</span>
+      <strong class="h4 mb-0 text-primary">{{ entry.total_production_cost|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-3 col-6">
+    <div class="card card-body shadow-sm bg-light">
+      <span class="text-muted small">تكلفة الوحدة الجيدة</span>
+      <strong class="h4 mb-0 text-dark">
+        {% if entry.cost_per_good_unit %}{{ entry.cost_per_good_unit|floatformat:4 }} ج.م{% else %}—{% endif %}
+      </strong>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white"><h2 class="h5 mb-0">المواد الخام الفعلية المستهلكة في الإنتاج والتسعير المطبق</h2></div>
+  <div class="table-responsive">
+    <table class="table table-bordered mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>كود المادة</th>
+          <th>اسم المادة</th>
+          <th>الكمية المستهلكة الفعلية</th>
+          <th>الوحدة الأساسية</th>
+          <th>سعر الوحدة الأساسية (ج.م)</th>
+          <th>إجمالي تكلفة المادة (ج.م)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for mat in materials %}
+        <tr>
+          <td><bdi dir="ltr">{{ mat.material_sku }}</bdi></td>
+          <td><strong>{{ mat.material_name }}</strong></td>
+          <td>{{ mat.quantity_base }}</td>
+          <td>{{ mat.base_uom }}</td>
+          <td>
+            {% if mat.unit_price == 'غير مسعر' %}
+              <span class="badge bg-danger">غير مسعر</span>
+            {% else %}
+              {{ mat.unit_price }} ج.م
+            {% endif %}
+          </td>
+          <td><strong>{{ mat.cost }} ج.م</strong></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="text-center py-3 text-muted">لا توجد مواد خام مسجلة لهذا المنتج في هذا الشهر.</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-light">
+        <tr>
+          <th colspan="5" class="text-start">إجمالي تكلفة المواد الخام الفعلية:</th>
+          <th>{{ entry.actual_material_cost|floatformat:2 }} ج.م</th>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white"><h2 class="h5 mb-0">تفاصيل توزيع المصاريف الصناعية للشهر</h2></div>
+      <div class="card-body">
+        <ul class="list-group list-group-flush">
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>نصيب العمالة:</span>
+            <strong>{{ entry.allocated_labor_cost|floatformat:2 }} ج.م</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>نصيب الكهرباء:</span>
+            <strong>{{ entry.allocated_electricity_cost|floatformat:2 }} ج.م</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>نصيب المياه:</span>
+            <strong>{{ entry.allocated_water_cost|floatformat:2 }} ج.م</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>نصيب المصاريف الصناعية الأخرى:</span>
+            <strong>{{ entry.allocated_other_cost|floatformat:2 }} ج.م</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2 bg-light">
+            <span>إجمالي المصاريف الصناعية المحملة:</span>
+            <strong class="text-primary">{{ entry.allocated_labor_cost|add:entry.allocated_electricity_cost|add:entry.allocated_water_cost|add:entry.allocated_other_cost|floatformat:2 }} ج.م</strong>
+          </li>
+        </ul>
+        <p class="small text-muted mt-3 mb-0">
+          سياسة التوزيع المعتمدة: <strong>{{ period.get_allocation_policy_display }}</strong>.
+        </p>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white"><h2 class="h5 mb-0">تحليل إنتاجية الرولات</h2></div>
+      <div class="card-body">
+        <ul class="list-group list-group-flush">
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>عدد الرولات المستهلكة:</span>
+            <strong>{{ entry.rolls_consumed|floatformat:2 }}</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>الكراتين المتوقعة بالمعيار:</span>
+            <strong>{{ entry.expected_cartons|floatformat:2 }}</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>الكراتين الجيدة المنتجة فعليًا:</span>
+            <strong>{{ entry.actual_good_cartons|floatformat:2 }}</strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2">
+            <span>فارق الكراتين:</span>
+            <strong>
+              {% if entry.yield_variance_cartons >= 0 %}
+                <span class="text-success">+{{ entry.yield_variance_cartons|floatformat:2 }} (فائض)</span>
+              {% else %}
+                <span class="text-danger">{{ entry.yield_variance_cartons|floatformat:2 }} (عجز)</span>
+              {% endif %}
+            </strong>
+          </li>
+          <li class="d-flex justify-content-between align-items-center py-2 bg-light">
+            <span>نسبة عجز العائد:</span>
+            <strong>
+              {% if entry.yield_shortfall_percent != None %}
+                {{ entry.yield_shortfall_percent|floatformat:2 }}%
+              {% else %}
+                —
+              {% endif %}
+            </strong>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

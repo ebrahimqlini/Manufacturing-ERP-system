@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-7">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white"><h1 class="h5 mb-0">{{ title }}</h1></div>
+      <div class="card-body">
+        <form method="post">
+          {% csrf_token %}
+          {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">{{ form.material.label }}</label>
+              {{ form.material }}
+              {% if form.material.errors %}<div class="text-danger small">{{ form.material.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.price_per_unit.label }}</label>
+              {{ form.price_per_unit }}
+              {% if form.price_per_unit.errors %}<div class="text-danger small">{{ form.price_per_unit.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.unit.label }}</label>
+              {{ form.unit }}
+              <div class="form-text small">يمكن إدخال السعر بالوحدة الأساسية أو وحدة بديلة معرفة على الصنف.</div>
+              {% if form.unit.errors %}<div class="text-danger small">{{ form.unit.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.effective_date.label }}</label>
+              {{ form.effective_date }}
+              {% if form.effective_date.errors %}<div class="text-danger small">{{ form.effective_date.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.notes.label }}</label>
+              {{ form.notes }}
+              {% if form.notes.errors %}<div class="text-danger small">{{ form.notes.errors }}</div>{% endif %}
+            </div>
+          </div>
+          <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="submit" class="btn btn-primary">حفظ السعر</button>
+            <a class="btn btn-outline-secondary" href="{% url 'costing:price_list' %}">إلغاء</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

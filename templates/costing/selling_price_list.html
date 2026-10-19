@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}أسعار البيع المرجعية{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">أسعار البيع المرجعية</h1>
+    <span class="text-muted small">أسعار البيع المعتمدة من مالك المصنع للعرض الاسترشادي بجانب تكلفة الإنتاج فقط دون تغيير آليات البيع</span>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+    {% if user.is_staff %}
+      <a class="btn btn-primary" href="{% url 'costing:selling_price_add' %}">إضافة / تحديث سعر بيع</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>كود الصنف</th>
+          <th>اسم المنتج</th>
+          <th>سعر البيع المرجعي</th>
+          <th>وحدة البيع</th>
+          <th>آخر تحديث</th>
+          <th>محدث بواسطة</th>
+          <th>ملاحظات</th>
+          <th>إجراء</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sp in prices %}
+        <tr>
+          <td><bdi dir="ltr"><strong>{{ sp.product.sku }}</strong></bdi></td>
+          <td>{{ sp.product.name_ar }}</td>
+          <td><strong class="text-primary">{{ sp.selling_price|floatformat:2 }} ج.م</strong></td>
+          <td>{{ sp.unit.name_ar }} ({{ sp.unit.code }})</td>
+          <td>{{ sp.updated_at|date:"Y-m-d H:i" }}</td>
+          <td>{{ sp.updated_by }}</td>
+          <td>{{ sp.notes|default:"—" }}</td>
+          <td>
+            {% if user.is_staff %}
+              <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:selling_price_edit' sp.pk %}">تعديل</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="text-center py-4 text-muted">لم يتم تسجيل أسعار بيع مرجعية بعد.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

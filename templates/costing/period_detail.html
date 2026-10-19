@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}تقرير تكاليف شهر {{ period.year }}/{{ period.month|stringformat:"02d" }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">تقرير تكاليف شهر {{ period.year }} / {{ period.month|stringformat:"02d" }}</h1>
+    {% if period.start_date %}<span class="text-muted small" dir="ltr">الفترة: {{ period.start_date|date:"Y-m-d" }} → {{ period.end_date|date:"Y-m-d" }}</span>{% endif %}
+    <div class="d-flex align-items-center gap-2 mt-1">
+      {% if period.status == 'FINALIZED' %}
+        <span class="badge bg-success">معتمد نهائيًا</span>
+        <span class="small text-muted">اعتمد بواسطة {{ period.finalized_by }} في {{ period.finalized_at|date:"Y-m-d H:i" }}</span>
+      {% else %}
+        <span class="badge bg-warning text-dark">مسودة / قيد الإعداد</span>
+        {% if period.calculated_at %}<span class="small text-muted">آخر احتساب: {{ period.calculated_at|date:"Y-m-d H:i" }}</span>{% endif %}
+      {% endif %}
+      {% if period.reopened_at %}
+        <span class="badge bg-secondary">أعيد فتحه</span>
+        <span class="small text-muted">بواسطة {{ period.reopened_by }} — السبب: {{ period.reopen_reason }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة الشهور</a>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:order_breakdown' period.pk %}">تفصيل أوامر الإنتاج</a>
+    {% if period.status == 'DRAFT' and user.is_staff %}
+      <form method="post" action="{% url 'costing:period_calculate' %}" class="d-inline">
+        {% csrf_token %}
+        <input type="hidden" name="year" value="{{ period.year }}">
+        <input type="hidden" name="month" value="{{ period.month }}">
+        <button type="submit" class="btn btn-outline-primary">إعادة احتساب</button>
+      </form>
+      <a class="btn btn-outline-info text-dark" href="{% url 'costing:period_policy_edit' period.pk %}">تغيير سياسات التوزيع</a>
+      {% if period.is_complete %}
+        <form method="post" action="{% url 'costing:period_finalize' period.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-success" onclick="return confirm('هل أنت متأكد من اعتماد فترة التكاليف نهائيًا؟');">اعتماد نهائي</button>
+        </form>
+      {% endif %}
+    {% elif period.status == 'FINALIZED' and user.is_staff %}
+      <a class="btn btn-outline-warning text-dark" href="{% url 'costing:period_reopen' period.pk %}">إعادة فتح الفترة</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if not period.is_complete %}
+<div class="alert alert-warning shadow-sm">
+  <h3 class="h6 alert-heading fw-bold">تنبيه: التقرير مبدئي لوجود نواقص في البيانات أو الأسعار</h3>
+  <ul class="mb-0">
+    {% for note in missing_notes %}
+      <li>{{ note }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-2 col-6">
+    <div class="card card-body text-center shadow-sm">
+      <span class="text-muted small">تكلفة المواد الفعلية</span>
+      <strong class="h5 text-primary mb-0 mt-1">{{ period.materials_total|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-2 col-6">
+    <div class="card card-body text-center shadow-sm">
+      <span class="text-muted small">مصاريف العمالة</span>
+      <strong class="h5 mb-0 mt-1">{{ period.labor_total|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-2 col-6">
+    <div class="card card-body text-center shadow-sm">
+      <span class="text-muted small">مصاريف الكهرباء</span>
+      <strong class="h5 mb-0 mt-1">{{ period.electricity_total|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-2 col-6">
+    <div class="card card-body text-center shadow-sm">
+      <span class="text-muted small">مصاريف المياه</span>
+      <strong class="h5 mb-0 mt-1">{{ period.water_total|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-2 col-6">
+    <div class="card card-body text-center shadow-sm">
+      <span class="text-muted small">مصاريف صناعية أخرى</span>
+      <strong class="h5 mb-0 mt-1">{{ period.other_industrial_total|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-md-2 col-12">
+    <div class="card card-body text-center shadow-sm bg-light">
+      <span class="text-muted small">إجمالي تكلفة الإنتاج للشهر</span>
+      <strong class="h4 text-success mb-0 mt-1">{{ period.total_production_cost|floatformat:2 }} ج.م</strong>
+      <span class="small text-muted mt-1">{{ period.get_allocation_policy_display }}</span>
+      <span class="small text-muted">سياسة الهالك: {{ period.get_waste_policy_display }}</span>
+    </div>
+  </div>
+</div>
+
+<div class="alert alert-secondary shadow-sm small">
+  <strong>طريقة تقييم المواد:</strong> {{ period.get_material_valuation_method_display }}.
+  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل بيانات تكلفة.
+  {% if waste_total > 0 %}<br><strong>تكلفة المواد المنفصلة عن الهالك هذا الشهر:</strong> {{ waste_total|floatformat:2 }} ج.م — تُعرض منفصلة ولا تُضاف فوق إجمالي تكلفة المواد.{% endif %}
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white"><h2 class="h5 mb-0">مطابقة المصاريف: الإجمالي مقابل الموزّع</h2></div>
+  <div class="table-responsive">
+    <table class="table table-bordered mb-0">
+      <thead class="table-light">
+        <tr><th>البند</th><th>إجمالي المصروف المسجل</th><th>الموزّع على المنتجات</th><th>الفرق</th></tr>
+      </thead>
+      <tbody>
+        {% for row in reconciliation %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td>{{ row.total|floatformat:2 }} ج.م</td>
+          <td>{{ row.allocated|floatformat:2 }} ج.م</td>
+          <td>{% if row.difference == 0 %}<span class="text-success">مطابق</span>{% else %}<span class="text-danger fw-bold">{{ row.difference|floatformat:2 }} ج.م</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <h2 class="h5 mb-0">بيان تكلفة الإنتاج وتوزيع المصاريف حسب المنتج</h2>
+    <span class="badge bg-secondary">{{ entries.count }} منتج</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>الصنف / المنتج</th>
+          <th>خط الإنتاج</th>
+          <th>الإنتاج الجيد</th>
+          <th>الهالك</th>
+          <th>إجمالي تكلفة المواد الفعلية</th>
+          <th>تكلفة المواد المحمّلة على الجيد</th>
+          <th>تكلفة المواد المنفصلة عن الهالك</th>
+          <th>العمالة</th>
+          <th>الكهرباء</th>
+          <th>المياه</th>
+          <th>أخرى</th>
+          <th>إجمالي التكلفة</th>
+          <th>تكلفة الوحدة الجيدة</th>
+          <th>سعر البيع المرجعي</th>
+          <th>تفاصيل</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>
+            <strong>{{ entry.product.name_ar }}</strong><br>
+            <bdi dir="ltr" class="text-muted small">{{ entry.product.sku }}</bdi>
+            {% if entry.calculation_status == 'INCOMPLETE' %}
+              <span class="badge bg-danger small">بيانات ناقصة</span>
+            {% endif %}
+          </td>
+          <td>{{ entry.production_line.name_ar|default:"—" }}</td>
+          <td>{{ entry.good_units_produced|floatformat:0 }} {{ entry.product.base_uom.code }}</td>
+          <td>{{ entry.scrap_units_produced|floatformat:0 }}</td>
+          <td>{{ entry.actual_material_cost|floatformat:2 }} ج.م</td>
+          <td class="text-success">{{ entry.material_cost_assigned_to_good|floatformat:2 }} ج.م</td>
+          <td class="text-warning">{{ entry.waste_material_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_labor_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_electricity_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_water_cost|floatformat:2 }} ج.م</td>
+          <td>{{ entry.allocated_other_cost|floatformat:2 }} ج.م</td>
+          <td><strong>{{ entry.total_production_cost|floatformat:2 }} ج.م</strong></td>
+          <td class="text-success fw-bold">
+            {% if entry.cost_per_good_unit %}
+              {{ entry.cost_per_good_unit|floatformat:4 }} ج.م
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>
+            {% if entry.selling_price_snapshot %}
+              <span class="text-primary">{{ entry.selling_price_snapshot|floatformat:2 }} ج.م</span>
+            {% else %}
+              <span class="text-muted small">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <a class="btn btn-sm btn-outline-info text-dark" href="{% url 'costing:product_breakdown' entry.pk %}">التفاصيل</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="15" class="text-center py-4 text-muted">لا يوجد إنتاج مسجل لهذا الشهر.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header bg-white"><h2 class="h5 mb-0">تحليل إنتاجية الرولات ونسب العجز / الفاقد (Roll Yield & Waste)</h2></div>
+  <div class="table-responsive">
+    <table class="table table-bordered mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>المنتج</th>
+          <th>الرولات المستهلكة</th>
+          <th>الكراتين المتوقعة</th>
+          <th>الكراتين الجيدة الفعلية</th>
+          <th>فارق الإنتاجية</th>
+          <th>نسبة عجز العائد %</th>
+          <th>ملاحظات</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>{{ entry.product.name_ar }} <bdi dir="ltr" class="small">({{ entry.product.sku }})</bdi></td>
+          <td>{{ entry.rolls_consumed|floatformat:2 }}</td>
+          <td>{{ entry.expected_cartons|floatformat:2 }}</td>
+          <td>{{ entry.actual_good_cartons|floatformat:2 }}</td>
+          <td>
+            {% if entry.yield_variance_cartons >= 0 %}
+              <span class="text-success fw-bold">+{{ entry.yield_variance_cartons|floatformat:2 }} (فائض)</span>
+            {% else %}
+              <span class="text-danger fw-bold">{{ entry.yield_variance_cartons|floatformat:2 }} (عجز)</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if entry.yield_shortfall_percent != None %}
+              {% if entry.yield_shortfall_percent > 0 %}
+                <span class="text-danger fw-bold">{{ entry.yield_shortfall_percent|floatformat:2 }}%</span>
+              {% else %}
+                <span class="text-success">0.00% (مطابق أو فائض)</span>
+              {% endif %}
+            {% else %}
+              <span class="text-muted small">غير محدد معيار</span>
+            {% endif %}
+          </td>
+          <td class="small text-muted">
+            {% if entry.expected_cartons == 0 and entry.rolls_consumed > 0 %}
+              لم يُضبط معيار كراتين لكل رول لهذا المنتج.
+            {% elif entry.rolls_consumed == 0 %}
+              لم يُسجل استهلاك رولات بالوحدة المحددة.
+            {% else %}
+              احتسب بناء على الاستهلاك الفعلي للمادة.
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

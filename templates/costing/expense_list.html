@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}المصاريف الشهرية{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">سجل المصاريف الشهرية</h1>
+    <span class="text-muted small">تسجيل مصاريف العمالة والكهرباء والمياه والمصاريف الصناعية الأخرى لكل شهر وتحديد نطاق التخصيص</span>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+    {% if user.is_staff %}
+      <a class="btn btn-primary" href="{% url 'costing:expense_create' %}">إضافة مصروف شهري</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if utility_gaps %}
+<div class="alert alert-warning shadow-sm">
+  <h2 class="h6 alert-heading fw-bold">تنبيه: فواتير مرافق مطلوبة لم تُسجل بعد</h2>
+  <p class="mb-2 small">الكهرباء والمياه مصاريف تشغيل مطلوبة؛ غياب الفاتورة لا يعني أن قيمتها صفر. سجّل الفاتورة الفعلية أو قيمة 0.00 عند تأكيد عدم وجود مصروف.</p>
+  <ul class="mb-0 small">
+    {% for gap in utility_gaps %}
+      <li>
+        <a href="{% url 'costing:period_detail' gap.period.pk %}">{{ gap.period.year }} / {{ gap.period.month|stringformat:"02d" }}</a>
+        — ناقص: {{ gap.missing|join:"، " }}
+      </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="alert alert-secondary shadow-sm small">
+  <strong>ملاحظة تخصيص الفواتير:</strong> يُحمَّل المصروف بالكامل على الشهر المختار في النموذج. لا يفترض النظام أن فاتورة الكهرباء/المياه تغطي نفس شهر الاستهلاك الفعلي؛ أي اختلاف بين فترة الفاتورة وفترة الاستهلاك يُوثَّق في البيان أو الملاحظات.
+</div>
+
+<div class="card card-body mb-3 bg-light shadow-sm">
+  <form method="get" class="row g-2 align-items-end">
+    <div class="col-md-3 col-6">
+      <label class="form-label small">السنة</label>
+      <input type="number" name="year" class="form-control form-control-sm" value="{{ selected_year }}" placeholder="الكل">
+    </div>
+    <div class="col-md-3 col-6">
+      <label class="form-label small">الشهر</label>
+      <input type="number" name="month" class="form-control form-control-sm" value="{{ selected_month }}" min="1" max="12" placeholder="الكل">
+    </div>
+    <div class="col-md-4 col-8">
+      <label class="form-label small">نوع المصروف</label>
+      <select name="type" class="form-select form-select-sm">
+        <option value="">جميع الأنواع</option>
+        {% for val, label in types %}
+          <option value="{{ val }}" {% if selected_type == val %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2 col-4">
+      <button type="submit" class="btn btn-sm btn-outline-dark w-100">تصفية</button>
+    </div>
+  </form>
+</div>
+
+<div class="row g-2 mb-3">
+  <div class="col-6 col-md">
+    <div class="card card-body text-center p-2 shadow-sm">
+      <span class="text-muted small">عمالة</span>
+      <strong class="text-primary">{{ totals.labor|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="card card-body text-center p-2 shadow-sm">
+      <span class="text-muted small">كهرباء</span>
+      <strong class="text-primary">{{ totals.electricity|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="card card-body text-center p-2 shadow-sm">
+      <span class="text-muted small">مياه</span>
+      <strong class="text-primary">{{ totals.water|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="card card-body text-center p-2 shadow-sm">
+      <span class="text-muted small">صناعية أخرى</span>
+      <strong class="text-primary">{{ totals.other|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-12 col-md">
+    <div class="card card-body text-center p-2 shadow-sm bg-white">
+      <span class="text-muted small">إجمالي المصاريف المعروضة</span>
+      <strong class="text-success">{{ totals.grand|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>الفترة</th>
+          <th>نوع المصروف</th>
+          <th>البيان</th>
+          <th>النطاق</th>
+          <th>التخصيص</th>
+          <th>المبلغ (ج.م)</th>
+          <th>إجراء</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for exp in expenses %}
+        <tr>
+          <td><strong>{{ exp.year }}/{{ exp.month|stringformat:"02d" }}</strong></td>
+          <td><span class="badge bg-secondary">{{ exp.get_expense_type_display }}</span></td>
+          <td>{{ exp.description }}</td>
+          <td><span class="small text-muted">{{ exp.get_scope_display }}</span></td>
+          <td>
+            {% if exp.scope == 'LINE' %}
+              خط: {{ exp.production_line.name_ar }}
+            {% elif exp.scope == 'PRODUCT' %}
+              منتج: {{ exp.product.name_ar }}
+            {% else %}
+              عام للمصنع
+            {% endif %}
+          </td>
+          <td>
+            <strong>{{ exp.amount|floatformat:2 }} ج.م</strong>
+            {% if exp.amount == 0 %}<br><span class="badge bg-warning text-dark">مُسجّل بصفر (مؤكد)</span>{% endif %}
+          </td>
+          <td>
+            {% if user.is_staff %}
+              <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:expense_edit' exp.pk %}">تعديل</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="text-center py-4 text-muted">لا توجد مصاريف مسجلة مطابقة.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

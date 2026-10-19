@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated: 2026-10-15
+Updated: 2026-10-19
 
 ## Prompt 0 — foundation
 
@@ -31,7 +31,7 @@ Implemented in this checkout:
 - Operation progress rows are incremental quantities. Their cumulative total cannot exceed the order plan or the nearest preceding non-skipped operation's processed total; completion rechecks the same limit. Required route steps default to required, and only explicitly optional snapshots may be skipped.
 - Progress and production-result forms carry stable UUID submission keys. Replays with the same key and payload return the existing row without posting again; payload changes under a reused key fail. Good output and scrap remain order-level entries capped by the plan; route progress is not treated as a production-yield ledger.
 - Finished goods are received in partial receipts through the shared inventory service. Reversing a receipt remains a generic inventory action and leaves a completed order completed. A staff-only replacement receipt path links a new receipt to the reversed original and keeps net receipts within recorded good output; ordinary receipt remains limited to active orders. Cancellation retains history.
-- WIP balances/transfers, machine scheduling, costing formulas/values, accounting entries, and factory-specific BOM quantities are not implemented. WIP transfer policy and costing inputs/method require factory/accountant confirmation.
+- WIP balances/transfers, machine scheduling, accounting entries, and factory-specific BOM quantities are not implemented in this phase. Monthly product costing is implemented separately (see the production-costing section below); its material valuation remains provisional until owner/accountant confirmation, and the WIP transfer policy is still unconfirmed.
 
 ### Prompt 2 verification (before Prompt 2.1)
 
@@ -67,10 +67,31 @@ Implemented in this checkout:
 - Verification after the no-negative-stock fix (2026-10-15): full SQLite `manage.py test` — 30 tests passed, 3 skipped (PostgreSQL row-lock/direct-trigger cases). Full PostgreSQL `manage.py test --keepdb` — 30 tests passed, no skips, against the preserved `test_paper_factory` database. PostgreSQL coverage included two independent transactions racing to issue 7 units each from a balance of 10: one posted, one was rejected, and the final balance was 3. PostgreSQL direct-SQL UPDATE/DELETE trigger tests passed.
 - SQLite and PostgreSQL `manage.py check` / `check --database default` passed. `makemigrations --check --dry-run` reported no model changes. `showmigrations inventory` shows `0001` through `0004` applied; `migrate --plan` reports no pending operations. `git diff --check` passed; Git only reported the existing LF-to-CRLF working-copy notices.
 - Applied migration `inventory.0004_posted_records_immutable` to `paper_factory`; its sole operation installs PostgreSQL UPDATE/DELETE triggers and does not rewrite stock data. Before migration and again after all checks, the connected database identity was `paper_factory` / `paper_factory_app`, with zero product, movement, or ledger rows. The migration is recorded as applied and both expected triggers exist. All test writes were confined to SQLite's disposable test DB or the existing PostgreSQL `test_paper_factory` DB.
-- A `.env` file is absent and `.env` patterns are ignored by Git; PostgreSQL connection values were supplied only to the local process environment for verification. No credential value is stored in project files or this report.
+- A local `.env` now holds this checkout's PostgreSQL connection values; it is ignored by Git and Django does not load it automatically. No credential value is stored in committed project files or this report.
 - `manage.py check` and `makemigrations --check --dry-run` passed under SQLite; PostgreSQL checks passed as listed above.
-- Django does not load `.env` automatically. `.env` is absent, ignored by Git, and `.env.example` contains placeholders only.
+- Django does not load `.env` automatically. `.env` is ignored by Git and `.env.example` contains placeholders only.
 - No staff/superuser account was created as part of this implementation. Create the initial administrator locally with `python manage.py createsuperuser`; inventory setup and posting screens require `is_staff`.
+
+## Production costing — monthly product cost (implemented)
+
+Implemented in this checkout (currently uncommitted):
+
+- Added the `costing` app: monthly `CostingPeriod`, `ProductCostingEntry`, `ProductionOrderCostingEntry`, `MonthlyExpense` (labor / electricity / water / other industrial; scoped to factory, line, or product), owner-entered `RawMaterialPrice`, `RollYieldStandard`, and reference-only `ProductSellingPrice`.
+- Material cost comes from actual material issues dated inside the calendar month (reversed issues excluded), priced with owner-entered prices labelled as a provisional standard. FIFO/weighted-average are deliberately not used: no valuation method is approved and the shared ledger carries no cost. A missing or future-dated price is reported explicitly and marks the period incomplete instead of silently reusing another price.
+- Electricity and water are required utilities for any month with production: a missing utility bill (no record at all) marks the period incomplete with an explicit Arabic note and blocks finalization rather than being assumed zero. A recorded `0.00` is a confirmed zero-cost bill and is kept distinct from a missing one. Each bill is charged entirely to the operator-selected month, and the model documents that a utility bill's period may differ from its consumption month (no bill-period fields or accounting rule are invented).
+- Labor/electricity/water/other shared expenses are allocated by the period policy (units produced, material cost, material weight, or equal-per-line then units). Product- and line-scoped expenses are attributed directly. Allocation parts always sum to the recorded bucket total (cent-exact); this was verified for all four policies.
+- The waste policy changes the numbers, not just a stored flag: `ABSORBED_NORMAL` loads the full material cost on good units; `SEPARATE_ABNORMAL` splits material cost between good output and recorded scrap in proportion to recorded quantities, shown separately and never added on top of the material total.
+- Product entries are computed bottom-up from production-order entries so order sums equal product entries and period totals exactly. Each period stores its explicit `start_date`/`end_date` (set on every calculation; earlier rows backfilled by migration `0005`). Per-product and per-order breakdowns, a recorded-vs-allocated reconciliation table, and a cross-month comparison page show electricity and water separately; the comparison selects one product and shows its monthly material/labor/utilities/other/waste/total, cost per good unit, production and waste quantities, and month-over-month changes.
+- Finalized periods are protected by the expense model (`clean`/`delete`) and by the costing views/services; reopening requires a reason and is recorded.
+
+### Production costing verification
+
+- SQLite (isolated in-memory test database): `manage.py check` passed; `makemigrations --check --dry-run` reported no changes; the full `manage.py test` ran 85 tests, passed, and skipped 6 PostgreSQL-only tests. 35 of the passing tests are costing tests (including electricity/water attribution and isolation, zero-vs-missing, scope/policy allocation with cent-exact reconciliation, recalculation idempotency, comparison-view detail, finalized-period guards, and costing access control).
+- Migrations `costing.0001_initial`, `0002_costingperiod_calculated_by_and_more`, `0003_costingperiod_water_total_and_more`, `0004_alter_costingperiod_options`, and `0005_remove_monthlyexpense_monthly_expense_amount_positive_and_more` were applied to the local SQLite development database.
+- PostgreSQL: connected to `test_paper_factory` as `paper_factory_app` (PostgreSQL 18.6). The reported login with a space ("paper factory app") is not a valid role. With explicit approval, `costing.0002`–`0005` were applied to `test_paper_factory`, and `manage.py test --keepdb` ran all 85 tests with zero skips and preserved the test database. `paper_factory` was never connected to or modified.
+- Finalized-period protection is enforced on the instance and bulk/queryset write paths (`MonthlyExpense.save`/`delete` and `MonthlyExpense`/`CostingPeriod` queryset `update`/`delete`) and in admin (finalized periods are fully read-only and product-costing rows are inline read-only). Regression test `CostingModelTests.test_finalized_period_blocks_orm_and_bulk_writes` covers the bulk paths.
+- Access control: every costing page that exposes financial data (period list/detail, product and order breakdowns, cross-month comparison, monthly expenses, raw-material prices, and reference selling prices) requires a staff user or a user explicitly granted the `costing.view_costing_financials` permission. Ordinary authenticated users receive 403; write actions remain staff-only. The nav link is hidden from users without access. The permission is never assigned automatically.
+- The per-order breakdown totals row was corrected during this work.
 
 ## Remaining decisions and deployment work
 

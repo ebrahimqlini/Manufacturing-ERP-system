@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}مقارنة تكاليف الشهور{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">مقارنة تكاليف المنتج بين الشهور</h1>
+    <span class="text-muted small">قراءة فقط من البنود المحتسبة المحفوظة لكل فترة تكاليف (بما فيها غير المكتملة).</span>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة الشهور</a>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:expense_list' %}">المصاريف الشهرية</a>
+  </div>
+</div>
+
+<div class="alert alert-secondary shadow-sm small">
+  <strong>طريقة تقييم المواد:</strong> OWNER_STANDARD_PRICE (سعر مالك يدوي لكل مادة خام).
+  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل بيانات تكلفة.
+</div>
+
+<div class="alert alert-secondary shadow-sm small">
+  <strong>ملاحظة:</strong> تغيّر التكلفة بين شهرين قد يعكس تغيّر أسعار المواد أو قيمة فاتورة الكهرباء/المياه أو أثر توزيع المصاريف، وليس بالضرورة تغيّرًا في الاستهلاك. راجع عمودي «الإنتاج الجيد» و«الهالك» قبل تفسير أي زيادة على أنها زيادة استهلاك.
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white"><h2 class="h5 mb-0">إجمالي المصاريف والتكلفة لكل شهر</h2></div>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>الشهر</th>
+          <th>تكلفة المواد</th>
+          <th>العمالة</th>
+          <th>الكهرباء</th>
+          <th>المياه</th>
+          <th>مصاريف أخرى</th>
+          <th>إجمالي التكلفة</th>
+          <th>الحالة</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in monthly_rows %}
+        <tr>
+          <td>
+            <a href="{% url 'costing:period_detail' row.period.pk %}">{{ row.period.year }} / {{ row.period.month|stringformat:"02d" }}</a>
+          </td>
+          <td>{{ row.materials|floatformat:2 }} ج.م</td>
+          <td>{{ row.labor|floatformat:2 }} ج.م</td>
+          <td class="text-primary">{{ row.electricity|floatformat:2 }} ج.م</td>
+          <td class="text-primary">{{ row.water|floatformat:2 }} ج.م</td>
+          <td>{{ row.other|floatformat:2 }} ج.م</td>
+          <td><strong>{{ row.total|floatformat:2 }} ج.م</strong></td>
+          <td>
+            {% if row.period.status == 'FINALIZED' %}
+              <span class="badge bg-success">معتمد</span>
+            {% elif row.is_complete %}
+              <span class="badge bg-warning text-dark">مكتمل / مسودة</span>
+            {% else %}
+              <span class="badge bg-danger">بيانات ناقصة</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="text-center py-4 text-muted">لا توجد فترات تكاليف محتسبة بعد.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white">
+    <h2 class="h5 mb-0">تفصيل شهري لمنتج واحد (مع التغير مقارنة بالشهر السابق)</h2>
+  </div>
+  <div class="card-body">
+    {% if products %}
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-md-6">
+        <label class="form-label small">اختر المنتج</label>
+        <select name="product" class="form-select form-select-sm" onchange="this.form.submit()">
+          {% for p in products %}
+            <option value="{{ p.pk }}" {% if selected_product and p.pk == selected_product.pk %}selected{% endif %}>{{ p.name_ar }} ({{ p.sku }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-sm btn-outline-dark w-100">عرض</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-bordered table-hover mb-0 text-nowrap">
+        <thead class="table-light">
+          <tr>
+            <th>الشهر</th>
+            <th>الإنتاج الجيد</th>
+            <th>الهالك</th>
+            <th>تكلفة المواد المحمّلة على الجيد</th>
+            <th>العمالة</th>
+            <th>الكهرباء</th>
+            <th>المياه</th>
+            <th>مصاريف أخرى</th>
+            <th>تكلفة الهالك المنفصلة</th>
+            <th>إجمالي التكلفة</th>
+            <th>تكلفة الوحدة الجيدة</th>
+            <th>Δ الكهرباء</th>
+            <th>Δ المياه</th>
+            <th>Δ إجمالي التكلفة</th>
+            <th>Δ تكلفة الوحدة</th>
+            <th>Δ الإنتاج الجيد</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in detail_rows %}
+          <tr>
+            <td>
+              <a href="{% url 'costing:period_detail' row.period.pk %}">{{ row.period.year }} / {{ row.period.month|stringformat:"02d" }}</a>
+              {% if row.period.status == 'FINALIZED' %}<span class="badge bg-success">معتمد</span>{% endif %}
+            </td>
+            <td>{{ row.entry.good_units_produced|floatformat:0 }} {{ selected_product.base_uom.code }}</td>
+            <td>{{ row.entry.scrap_units_produced|floatformat:0 }}</td>
+            <td>{{ row.entry.material_cost_assigned_to_good|floatformat:2 }} ج.م</td>
+            <td>{{ row.entry.allocated_labor_cost|floatformat:2 }} ج.م</td>
+            <td class="text-primary">{{ row.entry.allocated_electricity_cost|floatformat:2 }} ج.م</td>
+            <td class="text-primary">{{ row.entry.allocated_water_cost|floatformat:2 }} ج.م</td>
+            <td>{{ row.entry.allocated_other_cost|floatformat:2 }} ج.م</td>
+            <td class="text-warning">{{ row.entry.waste_material_cost|floatformat:2 }} ج.م</td>
+            <td><strong>{{ row.entry.total_production_cost|floatformat:2 }} ج.م</strong></td>
+            <td class="fw-bold">
+              {% if row.entry.cost_per_good_unit %}{{ row.entry.cost_per_good_unit|floatformat:4 }} ج.م{% else %}—{% endif %}
+            </td>
+            <td>
+              {% if row.delta_electricity == None %}<span class="text-muted">—</span>
+              {% elif row.delta_electricity > 0 %}<span class="text-danger">+{{ row.delta_electricity|floatformat:2 }}</span>
+              {% elif row.delta_electricity < 0 %}<span class="text-success">{{ row.delta_electricity|floatformat:2 }}</span>
+              {% else %}<span class="text-muted">0.00</span>{% endif %}
+            </td>
+            <td>
+              {% if row.delta_water == None %}<span class="text-muted">—</span>
+              {% elif row.delta_water > 0 %}<span class="text-danger">+{{ row.delta_water|floatformat:2 }}</span>
+              {% elif row.delta_water < 0 %}<span class="text-success">{{ row.delta_water|floatformat:2 }}</span>
+              {% else %}<span class="text-muted">0.00</span>{% endif %}
+            </td>
+            <td>
+              {% if row.delta_total == None %}<span class="text-muted">—</span>
+              {% elif row.delta_total > 0 %}<span class="text-danger">+{{ row.delta_total|floatformat:2 }}</span>
+              {% elif row.delta_total < 0 %}<span class="text-success">{{ row.delta_total|floatformat:2 }}</span>
+              {% else %}<span class="text-muted">0.00</span>{% endif %}
+            </td>
+            <td>
+              {% if row.delta_cost_per_unit == None %}<span class="text-muted">—</span>
+              {% elif row.delta_cost_per_unit > 0 %}<span class="text-danger">+{{ row.delta_cost_per_unit|floatformat:4 }}</span>
+              {% elif row.delta_cost_per_unit < 0 %}<span class="text-success">{{ row.delta_cost_per_unit|floatformat:4 }}</span>
+              {% else %}<span class="text-muted">0.0000</span>{% endif %}
+            </td>
+            <td>
+              {% if row.delta_good_units == None %}<span class="text-muted">—</span>
+              {% elif row.delta_good_units > 0 %}<span class="text-success">+{{ row.delta_good_units|floatformat:0 }}</span>
+              {% elif row.delta_good_units < 0 %}<span class="text-danger">{{ row.delta_good_units|floatformat:0 }}</span>
+              {% else %}<span class="text-muted">0</span>{% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="16" class="text-center py-4 text-muted">لا توجد بنود محتسبة لهذا المنتج.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="small text-muted mt-2 mb-0">Δ = الفرق عن شهر الاحتساب السابق للمنتج نفسه. الأعمدة الفارغة (—) تعني عدم وجود شهر سابق مقارن أو عدم توفر القيمة.</p>
+    {% else %}
+    <p class="text-muted mb-0">لا توجد بيانات منتجات للمقارنة بعد.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <h2 class="h5 mb-0">تكلفة الوحدة الجيدة لكل منتج عبر الشهور</h2>
+    <span class="small text-muted">— تعني عدم وجود إنتاج مسجل للمنتج في ذلك الشهر</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover mb-0 text-nowrap">
+      <thead class="table-light">
+        <tr>
+          <th>المنتج</th>
+          {% for period in periods %}
+            <th>{{ period.year }}/{{ period.month|stringformat:"02d" }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in product_matrix %}
+        <tr>
+          <td>
+            <strong>{{ row.product.name_ar }}</strong>
+            <bdi dir="ltr" class="text-muted small">({{ row.product.sku }})</bdi>
+          </td>
+          {% for cell in row.cells %}
+            <td>
+              {% if cell %}
+                {% if cell.cost_per_good_unit %}
+                  {{ cell.cost_per_good_unit|floatformat:4 }} ج.م
+                {% else %}
+                  <span class="text-muted small">—</span>
+                {% endif %}
+                <br>
+                <span class="text-muted small">كهرباء {{ cell.allocated_electricity_cost|floatformat:2 }} / مياه {{ cell.allocated_water_cost|floatformat:2 }}</span>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+        {% empty %}
+        <tr><td colspan="{{ periods|length|add:1 }}" class="text-center py-4 text-muted">لا توجد بيانات منتجات للمقارنة.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

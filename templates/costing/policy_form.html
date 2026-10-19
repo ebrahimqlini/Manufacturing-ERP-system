@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white"><h1 class="h5 mb-0">{{ title }}</h1></div>
+      <div class="card-body">
+        <div class="alert alert-info small mb-3">
+          <strong>خيارات سياسات التكاليف المتاحة لمالك المصنع:</strong>
+          <ul class="mb-0 mt-1">
+            <li><strong>توزيع حسب عدد الوحدات الجيدة:</strong> يتم توزيع المصاريف الصناعية المشتركة بالتناسب مع كمية الإنتاج الجيد لكل منتج.</li>
+            <li><strong>توزيع حسب تكلفة المواد الفعلية:</strong> يتم توزيع المصاريف بالتناسب مع القيمة المالية للمواد المستهلكة في كل منتج.</li>
+            <li><strong>توزيع حسب كمية/وزن المواد:</strong> يتم توزيع المصاريف بالتناسب مع إجمالي أوزان المواد الخام المستهلكة.</li>
+            <li><strong>توزيع بالتساوي على خطوط الإنتاج:</strong> تقسم المصاريف بالتساوي بين خطوط الإنتاج النشطة ثم حسب الوحدات داخل كل خط.</li>
+          </ul>
+        </div>
+        <form method="post">
+          {% csrf_token %}
+          {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+          <div class="mb-3">
+            <label class="form-label">{{ form.allocation_policy.label }}</label>
+            {{ form.allocation_policy }}
+            {% if form.allocation_policy.errors %}<div class="text-danger small">{{ form.allocation_policy.errors }}</div>{% endif %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ form.waste_policy.label }}</label>
+            {{ form.waste_policy }}
+            {% if form.waste_policy.errors %}<div class="text-danger small">{{ form.waste_policy.errors }}</div>{% endif %}
+          </div>
+          <div class="d-flex justify-content-between align-items-center mt-4">
+            <button type="submit" class="btn btn-primary">حفظ السياسات وإعادة الاحتساب</button>
+            <a class="btn btn-outline-secondary" href="{% url 'costing:period_detail' period.pk %}">إلغاء</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

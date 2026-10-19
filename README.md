@@ -1,8 +1,8 @@
 # Paper-products factory ERP foundation
 
-Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes.
+Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, a confirmed zero-cost bill kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes.
 
-The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers and cost calculations remain out of scope until factory and accounting policies are confirmed. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
+The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers remain out of scope until factory policy is confirmed. Monthly product costing is implemented, but it prices material consumption with owner-entered provisional standard prices and does not use FIFO or weighted average, because no valuation method is approved and the stock ledger carries no cost; costs are therefore provisional until an accountant approves a valuation method. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
 
 ## Runtime baseline
 
@@ -38,7 +38,7 @@ python manage.py test
 python manage.py runserver
 ```
 
-`.env.example` documents environment variables but Django does not load `.env` files by itself. The setup commands above set a fresh development key in the current PowerShell session and select debug mode explicitly. `.gitignore` excludes `.env` and `.env.*` (while allowing `.env.example`); no real `.env` is currently configured in this checkout.
+`.env.example` documents environment variables but Django does not load `.env` files by itself. The setup commands above set a fresh development key in the current PowerShell session and select debug mode explicitly. `.gitignore` excludes `.env` and `.env.*` (while allowing `.env.example`); a local `.env` now holds this checkout's PostgreSQL values, but it is ignored by Git and is not loaded automatically. The verified local login role is `paper_factory_app` (underscores); the shared test database is `test_paper_factory`, and the production database `paper_factory` must never be targeted by development or test commands.
 
 Use separate settings for each environment:
 
@@ -56,7 +56,7 @@ After changing models, create migrations with `python manage.py makemigrations`,
 
 ## Planned app boundaries
 
-`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. Implemented domain apps are `catalog`, `inventory`, and `manufacturing`. Planned apps are `accounting`, `purchasing`, `sales`, and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
+`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. Implemented domain apps are `catalog`, `inventory`, `manufacturing`, and `costing`. Planned apps are `accounting`, `purchasing`, `sales`, and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
 
 ## Project records
 

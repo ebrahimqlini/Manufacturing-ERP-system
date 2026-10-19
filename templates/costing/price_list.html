@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}أسعار المواد الخام{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">أسعار المواد الخام</h1>
+    <span class="text-muted small">تسجيل وتحديث أسعار شراء المواد الخام المعتمدة لاحتساب تكلفة المواد المستهلكة</span>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+    {% if user.is_staff %}
+      <a class="btn btn-primary" href="{% url 'costing:price_create' %}">إضافة سعر مادة</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>كود الصنف</th>
+          <th>اسم المادة الخام</th>
+          <th>السعر المسجل</th>
+          <th>وحدة السعر</th>
+          <th>السعر المحسوب للوحدة الأساسية</th>
+          <th>تاريخ السريان</th>
+          <th>ملاحظات</th>
+          <th>إجراء</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for price in prices %}
+        <tr>
+          <td><bdi dir="ltr"><strong>{{ price.material.sku }}</strong></bdi></td>
+          <td>{{ price.material.name_ar }}</td>
+          <td><strong>{{ price.price_per_unit|floatformat:4 }} ج.م</strong></td>
+          <td>{{ price.unit.name_ar }} ({{ price.unit.code }})</td>
+          <td class="text-success fw-bold">{{ price.price_per_base_unit|floatformat:4 }} ج.م / {{ price.material.base_uom.code }}</td>
+          <td>{{ price.effective_date|date:"Y-m-d" }}</td>
+          <td>{{ price.notes|default:"—" }}</td>
+          <td>
+            {% if user.is_staff %}
+              <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:price_edit' price.pk %}">تعديل</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="text-center py-4 text-muted">لم يتم تسجيل أسعار للمواد الخام بعد. أضف أسعار المواد لتفعيل احتساب التكاليف.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

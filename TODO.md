@@ -26,12 +26,23 @@
 - [x] Record the confirmed fiber operation (pressing fiber material in a mold) without inventing other stages, materials, machines, units, or rates; keep product BOMs/routes configurable.
 - [x] Reuse the shared inventory ledger for partial material issues and separate finished-goods receipts; record shortages as information, not movements.
 - [x] Test route/BOM snapshots, partial issues, shortage and stock limits, good/scrap quantities, finished receipts, order limits, authorization, and database behavior.
-- [x] Defer WIP balances/transfers and cost calculation because factory/accounting policies and inputs are unconfirmed.
-- [ ] Obtain owner/accountant approval of the costing method before calculating production costs; confirm WIP location/transfer policy and fiber inputs/stages before extending workflows.
+- [x] Defer WIP balances/transfers because factory policy is unconfirmed.
+- [x] Implement monthly product costing (actual material issues with owner-entered provisional prices; labor/electricity/water/other allocated by policy; waste handling; per-product/per-order breakdowns; cross-month comparison; draft/finalize/reopen).
+- [ ] Obtain owner/accountant approval of the material valuation method and waste treatment before treating costing output as accounting-final; confirm the WIP location/transfer policy and fiber inputs/stages before extending workflows.
+
+## Production costing — monthly product cost (implemented; verification in IMPLEMENTATION_STATUS.md)
+
+- [x] Add `costing` models, services, views, admin, Arabic RTL templates, and migrations for monthly product costing.
+- [x] Ensure electricity and water are recorded per month and flagged (not assumed zero) when missing for a producing month; show allocated electricity and water separately, and keep a confirmed `0.00` distinct from a missing bill.
+- [x] Store explicit period start/end dates and attribute material, output, and expenses by them; recalculating one month replaces its entries without touching other months.
+- [x] Allocate factory/line/product-scoped expenses by the selected policy with cent-exact reconciliation and no double counting.
+- [x] Provide per-product and per-order breakdowns plus a per-product cross-month comparison with month-over-month changes.
+- [x] Restrict every costing page that exposes financial data to staff users or users explicitly granted the `costing.view_costing_financials` permission (migration `0004`); write actions remain staff-only.
+- [x] Applied the approved costing migrations (`0002`–`0005`) to the shared test database `test_paper_factory` and ran the full suite there with `--keepdb` (85 tests, zero skips, database preserved). `paper_factory` was never targeted.
 
 ## Later prompts
 
-- [ ] Prompt 3: shared accounting foundation with consolidated and production-line cost dimensions.
+- [ ] Shared accounting foundation with consolidated and production-line cost dimensions (originally labelled "Prompt 3"; the production-costing work above is the separate costing prompt).
 - [ ] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger.
 - [ ] Prompt 5: shared customer/sales/delivery/returns workflows against the common inventory and accounting interfaces.
 - [ ] Prompt 6: read-only factory-wide and production-line reports, with reconciled consolidated totals.

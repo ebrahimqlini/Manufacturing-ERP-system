@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}تكاليف الإنتاج الشهرية{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">تكاليف الإنتاج الشهرية</h1>
+    <p class="text-muted small mb-0">احتساب التكلفة الفعلية للإنتاج وتوزيع المصاريف الصناعية ومعايير العائد والهالك</p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary" href="{% url 'costing:expense_list' %}">المصاريف الشهرية</a>
+    <a class="btn btn-outline-info text-dark" href="{% url 'costing:period_compare' %}">مقارنة الشهور</a>
+    <a class="btn btn-outline-primary" href="{% url 'costing:price_list' %}">أسعار المواد الخام</a>
+    <a class="btn btn-outline-primary" href="{% url 'costing:yield_standard_list' %}">معايير إنتاجية الرول</a>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:selling_price_list' %}">أسعار البيع المرجعية</a>
+  </div>
+</div>
+
+{% if user.is_staff %}
+<div class="card card-body mb-4 shadow-sm">
+  <h2 class="h5 mb-3">احتساب أو تحديث تكاليف شهر</h2>
+  <form method="post" action="{% url 'costing:period_calculate' %}" class="row g-3 align-items-end">
+    {% csrf_token %}
+    <div class="col-md-4">
+      <label class="form-label">السنة</label>
+      <input type="number" name="year" class="form-control" value="{{ current_year }}" min="2020" max="2099" required>
+    </div>
+    <div class="col-md-5">
+      <label class="form-label">الشهر</label>
+      <select name="month" class="form-select" required>
+        <option value="1" {% if current_month == 1 %}selected{% endif %}>1 — يناير</option>
+        <option value="2" {% if current_month == 2 %}selected{% endif %}>2 — فبراير</option>
+        <option value="3" {% if current_month == 3 %}selected{% endif %}>3 — مارس</option>
+        <option value="4" {% if current_month == 4 %}selected{% endif %}>4 — أبريل</option>
+        <option value="5" {% if current_month == 5 %}selected{% endif %}>5 — مايو</option>
+        <option value="6" {% if current_month == 6 %}selected{% endif %}>6 — يونيو</option>
+        <option value="7" {% if current_month == 7 %}selected{% endif %}>7 — يوليو</option>
+        <option value="8" {% if current_month == 8 %}selected{% endif %}>8 — أغسطس</option>
+        <option value="9" {% if current_month == 9 %}selected{% endif %}>9 — سبتمبر</option>
+        <option value="10" {% if current_month == 10 %}selected{% endif %}>10 — أكتوبر</option>
+        <option value="11" {% if current_month == 11 %}selected{% endif %}>11 — نوفمبر</option>
+        <option value="12" {% if current_month == 12 %}selected{% endif %}>12 — ديسمبر</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <button type="submit" class="btn btn-success w-100">احتساب / تحديث التكاليف</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card shadow-sm">
+  <div class="card-header bg-white"><h2 class="h5 mb-0">سجل فترات التكاليف المحتسبة</h2></div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>الفترة (الشهر/السنة)</th>
+          <th>الحالة</th>
+          <th>تكلفة المواد</th>
+          <th>المصاريف الصناعية</th>
+          <th>إجمالي تكلفة الإنتاج</th>
+          <th>سياسة التوزيع</th>
+          <th>اكتمال البيانات</th>
+          <th>الإجراءات</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for period in periods %}
+        <tr>
+          <td>
+            <strong>{{ period.year }} / {{ period.month|stringformat:"02d" }}</strong>
+            {% if period.start_date %}
+              <br><span class="text-muted small" dir="ltr">{{ period.start_date|date:"Y-m-d" }} → {{ period.end_date|date:"Y-m-d" }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if period.status == 'FINALIZED' %}
+              <span class="badge bg-success">معتمد نهائيًا</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">مبدئي / قيد الإعداد</span>
+            {% endif %}
+          </td>
+          <td>{{ period.materials_total|floatformat:2 }} ج.م</td>
+          <td>{{ period.labor_total|add:period.electricity_total|add:period.water_total|add:period.other_industrial_total|floatformat:2 }} ج.م</td>
+          <td><strong>{{ period.total_production_cost|floatformat:2 }} ج.م</strong></td>
+          <td><span class="small text-muted">{{ period.get_allocation_policy_display }}</span></td>
+          <td>
+            {% if period.is_complete %}
+              <span class="badge bg-info text-dark">مكتمل</span>
+            {% else %}
+              <span class="badge bg-danger">بيانات ناقصة</span>
+            {% endif %}
+            {% if period.missing_utility_labels %}
+              <br><span class="badge bg-warning text-dark">فاتورة ناقصة: {{ period.missing_utility_labels|join:"، " }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:period_detail' period.pk %}">عرض التقرير</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="text-center py-4 text-muted">لا توجد فترات تكاليف محتسبة بعد. اختر سنة وشهرًا لاحتساب التكاليف.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

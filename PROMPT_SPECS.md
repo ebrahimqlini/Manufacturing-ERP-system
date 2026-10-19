@@ -71,9 +71,36 @@ Implement manufacturing on top of Prompt 1's shared catalog and inventory servic
 
 Confirm cup product-specific route applicability, fiber materials/equipment/units and any stages beyond pressing in a mold, BOM ownership/versioning, WIP locations/transfers, scrap disposition, quality controls, and costing method/inputs. Production configuration remains generic until product-specific factory facts are provided.
 
+## Production costing — monthly product cost (implemented)
+
+Calculate per-product manufacturing cost for each calendar month from actual production and expense data, without creating WIP balances or accounting entries. This is the production-costing prompt; the shared-accounting phase below remains a separate later step.
+
+### Required design
+
+- Material cost is derived from actual material issues dated within the month (reversed issues excluded), priced with owner-entered `RawMaterialPrice` rows. Because no valuation method is approved and the ledger carries no cost, the price is a labelled provisional standard; FIFO/weighted average are not used, and a missing or future-dated price is reported and marks the period incomplete instead of being silently reused.
+- Record monthly operating expenses with a type (labor, electricity, water, other industrial) and a scope (factory, production line, or product). Electricity and water are required for any producing month; a missing bill is flagged and blocks finalization rather than being assumed zero. A deliberately recorded `0.00` is a confirmed zero-cost bill, kept distinct from a missing one. Bills are attributed wholly to the operator-selected month, and the model documents that a bill's period may differ from its consumption month.
+- Each period stores explicit `start_date`/`end_date` boundaries; material issues and production results are attributed by those boundaries, and recalculation replaces a month's entries without affecting other months.
+- Allocate factory-wide expenses with the period policy (units produced, material cost, material weight, or equal-per-line then units); attribute line- and product-scoped expenses directly. Allocation parts must sum exactly to each recorded bucket total.
+- The waste policy must change the computed result: absorbed normal waste loads full material cost on good units; separate abnormal waste splits material cost between good output and recorded scrap in proportion to recorded quantities and shows it separately.
+- Product entries are computed from production-order entries so order, product, and period totals reconcile exactly. Provide per-product and per-order breakdowns, recorded-vs-allocated reconciliation, separate electricity/water columns, and a cross-month comparison that selects one product and shows its monthly material/labor/utility/other/waste/total, cost per good unit, production and waste quantities, and month-over-month changes. Periods move draft → finalized, and reopening a finalized period requires a recorded reason.
+- Costing exposes financial data, so its read pages are limited to staff users or users explicitly granted the `costing.view_costing_financials` permission; ordinary authenticated users are refused. Write actions remain staff-only. The permission is never auto-assigned.
+
+### Required tests
+
+- Material cost reflects actual issues (not planned BOM) and excludes reversed issues; a missing price marks the period incomplete and blocks finalization.
+- Electricity and water appear separately in product cost; a producing month missing either is flagged incomplete, while a recorded `0.00` is treated as a confirmed zero and not as missing.
+- Each month uses its own recorded expenses with no carry-forward; factory/line/product scopes allocate to the correct products; totals reconcile without duplicate allocations for every policy; recalculation does not duplicate costs.
+- Waste policies produce the expected split; zero-good-unit and zero-base periods do not crash; finalized periods reject recalculation and require a reason to reopen.
+- The cross-month comparison shows consistent per-product values and month-over-month changes for the selected product and periods.
+- Existing catalog, inventory, and manufacturing workflows remain unaffected.
+
+### Status
+
+Implemented and verified on both the isolated SQLite test database and the approved PostgreSQL test database `test_paper_factory` (85 tests, zero skips). `paper_factory` must never be used for development or tests.
+
 ## Later prompts — shared support modules
 
-### Prompt 3 — Shared accounting foundation
+### Prompt 3 — Shared accounting foundation (distinct from the production-costing step above)
 
 Create one chart of accounts, periods, journal, and ledger system for the whole factory. Support factory-wide consolidated accounting and an optional production-line dimension on attributable costs/entries, including explicitly unallocated amounts. Define posting adapters for shared purchasing, sales, inventory, and manufacturing events; do not build one ledger per line. Add tests that line-level entries reconcile to consolidated totals, cross-line postings are not duplicated, reversals preserve audit history, and missing line attribution remains visible as unallocated. Obtain accountant approval for currency, tax, periods, accounts, posting rules, and cost integration before implementation.
 
