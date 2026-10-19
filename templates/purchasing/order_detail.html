@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ order.order_number }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">أمر شراء <bdi dir="ltr">{{ order.order_number }}</bdi></h1>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'purchasing:order_list' %}">كل الأوامر</a>
+    <a class="btn btn-outline-primary" href="{% url 'purchasing:supplier_detail' order.supplier.pk %}">بطاقة المورد</a>
+  </div>
+</div>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>المورد:</strong> {{ order.supplier.name_ar }} <bdi dir="ltr">{{ order.supplier.code }}</bdi><br>
+    <strong>تاريخ الأمر:</strong> {{ order.order_date|date:"Y-m-d" }}<br>
+    <strong>تاريخ التوريد المتوقع:</strong> {{ order.expected_date|date:"Y-m-d"|default:"—" }}<br>
+    <strong>مرجع المورد:</strong> {{ order.supplier_reference|default:"—" }}<br>
+    <strong>أنشئ بواسطة:</strong> {{ order.created_by }}
+  </div>
+  <div class="col-md-6">
+    <strong>الحالة:</strong> {{ order.get_status_display }}<br>
+    <strong>حالة الاستلام:</strong> {{ order.receipt_state_label }}<br>
+    <strong>إجمالي الأمر:</strong> {{ order.ordered_value|floatformat:2 }} ج.م<br>
+    <strong>قيمة المستلم:</strong> {{ order.received_value|floatformat:2 }} ج.م<br>
+    {% if order.confirmed_at %}<strong>تأكيد:</strong> {{ order.confirmed_at }} — {{ order.confirmed_by }}<br>{% endif %}
+    {% if order.cancelled_at %}<strong>إلغاء:</strong> {{ order.cancelled_at }} — {{ order.cancelled_by }}<br><strong>السبب:</strong> {{ order.cancel_reason }}{% endif %}
+  </div>
+</div>
+{% if order.notes %}<p class="mb-0 mt-2"><strong>ملاحظات:</strong> {{ order.notes }}</p>{% endif %}
+</div>
+{% if order.status == 'DRAFT' %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-outline-primary" href="{% url 'purchasing:order_edit' order.pk %}">تعديل المسودة</a>
+  <form method="post" action="{% url 'purchasing:order_confirm' order.pk %}">{% csrf_token %}<button class="btn btn-success">تأكيد الأمر</button></form>
+</div>
+<details class="mb-3"><summary class="text-danger">إلغاء الأمر</summary>
+  <form method="post" action="{% url 'purchasing:order_cancel' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب الإلغاء (مطلوب)" required><button class="btn btn-outline-danger">إلغاء</button></form>
+</details>
+{% elif order.status == 'CONFIRMED' %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  {% if order.can_receive %}<a class="btn btn-primary" href="{% url 'purchasing:receipt_add' order.pk %}">تسجيل استلام</a>{% endif %}
+</div>
+{% if not has_receipts %}
+<details class="mb-3"><summary class="text-danger">إلغاء الأمر</summary>
+  <form method="post" action="{% url 'purchasing:order_cancel' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب الإلغاء (مطلوب)" required><button class="btn btn-outline-danger">إلغاء</button></form>
+</details>
+{% else %}
+<div class="alert alert-info">لهذا الأمر استلامات مسجلة؛ يبقى مفتوحًا للمتابعة ولا يمكن إلغاؤه.</div>
+{% endif %}
+{% endif %}
+<h2 class="h5 mt-4">بنود الأمر</h2>
+<div class="table-responsive"><table class="table table-bordered align-middle">
+  <thead class="table-light"><tr><th>#</th><th>المادة/الصنف</th><th>الكمية المطلوبة</th><th>بالوحدة الأساسية</th><th>سعر الوحدة</th><th>إجمالي البند</th><th>المستلم</th><th>المتبقي</th></tr></thead>
+  <tbody>
+    {% for line in lines %}
+    <tr>
+      <td>{{ line.sequence }}</td>
+      <td>{{ line.material.name_ar }} <bdi dir="ltr">{{ line.material.sku }}</bdi></td>
+      <td>{{ line.quantity }} {{ line.unit }}</td>
+      <td>{{ line.quantity_base }} {{ line.material.base_uom }}</td>
+      <td>{{ line.unit_price }} ج.م / {{ line.unit }}</td>
+      <td>{{ line.line_total|floatformat:2 }} ج.م</td>
+      <td>{{ line.received_quantity_base }} {{ line.material.base_uom }}</td>
+      <td>{% if line.outstanding_quantity_base > 0 %}<span class="text-danger">{{ line.outstanding_quantity_base }}</span>{% else %}<span class="badge bg-success">مكتمل</span>{% endif %}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8" class="text-center">لا توجد بنود.</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><th colspan="5">الإجمالي</th><th>{{ order.ordered_value|floatformat:2 }} ج.م</th><th>{{ order.received_quantity_base }}</th><th>{{ order.outstanding_quantity_base }}</th></tr></tfoot>
+</table></div>
+<h2 class="h5 mt-4">الاستلامات</h2>
+<div class="table-responsive"><table class="table table-striped align-middle">
+  <thead><tr><th>المرجع</th><th>التاريخ</th><th>موقع الإيداع</th><th>عدد البنود</th><th>القيمة</th><th>سجّل بواسطة</th><th></th></tr></thead>
+  <tbody>
+    {% for receipt in receipts %}
+    <tr>
+      <td><a href="{% url 'purchasing:receipt_detail' receipt.pk %}"><bdi dir="ltr">{{ receipt.reference }}</bdi></a></td>
+      <td>{{ receipt.received_date|date:"Y-m-d" }}</td>
+      <td>{{ receipt.destination_location }}</td>
+      <td>{{ receipt.line_count }}</td>
+      <td>{{ receipt.total_value|floatformat:2 }} ج.م</td>
+      <td>{{ receipt.actor }}</td>
+      <td><a href="{% url 'purchasing:receipt_detail' receipt.pk %}">عرض</a></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" class="text-center">لا توجد استلامات بعد.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+<p class="text-muted small">أسعار الشراء معروضة للمعلومات والتتبع فقط، ولا تغيّر طريقة تقييم المواد في تكاليف الإنتاج.</p>
+{% endblock %}

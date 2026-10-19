@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ title }}</h1>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>المورد:</strong> {{ order.supplier.name_ar }}<br>
+    <strong>تاريخ الأمر:</strong> {{ order.order_date|date:"Y-m-d" }}<br>
+    <strong>حالة الاستلام:</strong> {{ order.receipt_state_label }}
+  </div>
+  <div class="col-md-6">
+    <strong>المطلوب:</strong> {{ order.ordered_quantity_base }}<br>
+    <strong>المستلم:</strong> {{ order.received_quantity_base }}<br>
+    <strong>المتبقي:</strong> {{ order.outstanding_quantity_base }}
+  </div>
+</div></div>
+<form method="post" class="card card-body gap-3">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <h2 class="h5 mb-0">بنود الاستلام</h2>
+  <div class="table-responsive"><table class="table table-bordered align-middle">
+    <thead class="table-light"><tr><th>المادة/الصنف</th><th>المطلوب</th><th>المستلم</th><th>المتبقي</th><th>كمية الاستلام</th><th>وحدة الاستلام</th><th>سعر الوحدة المتفق عليه</th></tr></thead>
+    <tbody>
+      {% for row in form.outstanding_lines %}
+      <tr>
+        <td>{{ row.line.material.name_ar }} <bdi dir="ltr">{{ row.line.material.sku }}</bdi></td>
+        <td>{{ row.line.quantity }} {{ row.line.unit }}</td>
+        <td>{{ row.line.received_quantity_base }} {{ row.line.material.base_uom }}</td>
+        <td>{{ row.outstanding }} {{ row.line.material.base_uom }}</td>
+        <td>{{ row.quantity_field }}{{ row.quantity_field.errors }}</td>
+        <td>{{ row.unit_field }}{{ row.unit_field.errors }}</td>
+        <td>{{ row.line.unit_price }} ج.م / {{ row.line.unit }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center">لا توجد كميات متبقية.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="text-muted small mb-0">اترك الكمية فارغة أو صفرًا للبنود غير المستلمة الآن. تُحوَّل الكميات إلى الوحدة الأساسية وتُرحَّل كحركات مخزون في العملية نفسها.</p>
+  <div class="d-flex gap-2"><button class="btn btn-primary">تسجيل الاستلام</button><a class="btn btn-outline-secondary" href="{% url 'purchasing:order_detail' order.pk %}">رجوع</a></div>
+</form>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}أسعار الشراء{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">أسعار الشراء الفعلية</h1>
+    <p class="text-muted small mb-0">لقطة أسعار الوحدات المسجَّلة عند الاستلام، للتتبع والمقارنة. لا تغيّر هذه الصفحة أسعار المواد الخام المستخدمة في تكاليف الإنتاج.</p>
+  </div>
+  <a class="btn btn-outline-secondary" href="{% url 'purchasing:order_list' %}">أوامر الشراء</a>
+</div>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-5"><select name="material" class="form-select"><option value="">كل المواد/الأصناف</option>{% for material in materials %}<option value="{{ material.pk }}" {% if selected_material == material.pk|stringformat:'s' %}selected{% endif %}>{{ material.name_ar }} ({{ material.sku }})</option>{% endfor %}</select></div>
+  <div class="col-md-5"><select name="supplier" class="form-select"><option value="">كل الموردين</option>{% for supplier in suppliers %}<option value="{{ supplier.pk }}" {% if selected_supplier == supplier.pk|stringformat:'s' %}selected{% endif %}>{{ supplier.name_ar }}</option>{% endfor %}</select></div>
+  <div class="col-md-2"><button class="btn btn-outline-primary w-100">تصفية</button></div>
+</form>
+<div class="table-responsive"><table class="table table-striped bg-white align-middle">
+  <thead><tr><th>تاريخ الاستلام</th><th>المورد</th><th>أمر الشراء</th><th>مرجع الاستلام</th><th>المادة/الصنف</th><th>الكمية</th><th>بالوحدة الأساسية</th><th>سعر الوحدة</th><th>السعر للوحدة الأساسية</th><th>القيمة</th><th>الحالة</th></tr></thead>
+  <tbody>
+    {% for line in page %}
+    <tr>
+      <td>{{ line.receipt.received_date|date:"Y-m-d" }}</td>
+      <td>{{ line.receipt.order.supplier.name_ar }}</td>
+      <td><a href="{% url 'purchasing:order_detail' line.receipt.order.pk %}"><bdi dir="ltr">{{ line.receipt.order.order_number }}</bdi></a></td>
+      <td><a href="{% url 'purchasing:receipt_detail' line.receipt.pk %}"><bdi dir="ltr">{{ line.receipt.reference }}</bdi></a></td>
+      <td>{{ line.order_line.material.name_ar }} <bdi dir="ltr">{{ line.order_line.material.sku }}</bdi></td>
+      <td>{{ line.quantity }} {{ line.unit }}</td>
+      <td>{{ line.quantity_base }} {{ line.order_line.material.base_uom }}</td>
+      <td>{{ line.unit_price }} ج.م</td>
+      <td>{{ line.price_per_base_unit }} ج.م</td>
+      <td>{{ line.line_total|floatformat:2 }} ج.م</td>
+      <td>{% if line.movement.reversal %}<span class="text-danger">معكوس</span>{% else %}مُرحَّل{% endif %}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="11" class="text-center py-4 text-muted">لا توجد أسعار شراء مسجلة بعد.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+{% include "pagination.html" with page_obj=page %}
+{% endblock %}

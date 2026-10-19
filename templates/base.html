@@ -19,6 +19,7 @@
       <a class="nav-link" href="{% url 'inventory:balances' %}">الأرصدة</a>
       <a class="nav-link" href="{% url 'inventory:history' %}">الحركات</a>
       <a class="nav-link" href="{% url 'manufacturing:orders' %}">الإنتاج</a>
+      {% if user.is_staff %}<a class="nav-link" href="{% url 'purchasing:order_list' %}">المشتريات</a>{% endif %}
       {% if user.is_staff or perms.costing.view_costing_financials %}<a class="nav-link" href="{% url 'costing:period_list' %}">التكاليف</a>{% endif %}
       <form method="post" action="{% url 'logout' %}" class="d-inline">{% csrf_token %}<button class="btn btn-sm btn-outline-light">خروج</button></form>
     {% else %}<a class="nav-link" href="{% url 'login' %}">دخول</a>{% endif %}

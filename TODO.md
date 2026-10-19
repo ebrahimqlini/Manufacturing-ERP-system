@@ -40,10 +40,19 @@
 - [x] Restrict every costing page that exposes financial data to staff users or users explicitly granted the `costing.view_costing_financials` permission (migration `0004`); write actions remain staff-only.
 - [x] Applied the approved costing migrations (`0002`–`0005`) to the shared test database `test_paper_factory` and ran the full suite there with `--keepdb` (85 tests, zero skips, database preserved). `paper_factory` was never targeted.
 
+## Purchasing and supplier management (implemented; verification in IMPLEMENTATION_STATUS.md)
+
+- [x] Add `purchasing` models, services, views, admin, Arabic RTL templates, and migration `0001_initial` for suppliers, purchase orders, and receipts.
+- [x] Keep purchase orders as commercial documents and post receipts only through the shared inventory ledger with unit-conversion validation and atomic rollback.
+- [x] Support partial/complete receiving with derived received/outstanding quantities, duplicate-reference and over-receipt prevention, and reversal-based correction.
+- [x] Snapshot purchase prices for traceability without changing `RawMaterialPrice` or the costing valuation method.
+- [x] Restrict all purchasing pages and writes to staff users and hide the navigation link from other users.
+- [x] Ran `manage.py check`, `makemigrations --check --dry-run`, and the full PostgreSQL suite with `--keepdb` (123 tests, zero skips, `test_paper_factory` preserved; `paper_factory` never targeted).
+
 ## Later prompts
 
 - [ ] Shared accounting foundation with consolidated and production-line cost dimensions (originally labelled "Prompt 3"; the production-costing work above is the separate costing prompt).
-- [ ] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger.
+- [x] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger (implemented; see the section above). Supplier invoices, payments, tax, and accounting postings remain deferred to the accounting phase.
 - [ ] Prompt 5: shared customer/sales/delivery/returns workflows against the common inventory and accounting interfaces.
 - [ ] Prompt 6: read-only factory-wide and production-line reports, with reconciled consolidated totals.
 - [ ] Prompt 7: approved authorization matrix, audit review, backups/restore, monitoring, and deployment hardening.

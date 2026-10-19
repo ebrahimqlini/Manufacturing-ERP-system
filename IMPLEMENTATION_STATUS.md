@@ -74,7 +74,7 @@ Implemented in this checkout:
 
 ## Production costing — monthly product cost (implemented)
 
-Implemented in this checkout (currently uncommitted):
+Implemented in this checkout (committed as `7ccb3a0`):
 
 - Added the `costing` app: monthly `CostingPeriod`, `ProductCostingEntry`, `ProductionOrderCostingEntry`, `MonthlyExpense` (labor / electricity / water / other industrial; scoped to factory, line, or product), owner-entered `RawMaterialPrice`, `RollYieldStandard`, and reference-only `ProductSellingPrice`.
 - Material cost comes from actual material issues dated inside the calendar month (reversed issues excluded), priced with owner-entered prices labelled as a provisional standard. FIFO/weighted-average are deliberately not used: no valuation method is approved and the shared ledger carries no cost. A missing or future-dated price is reported explicitly and marks the period incomplete instead of silently reusing another price.
@@ -93,6 +93,24 @@ Implemented in this checkout (currently uncommitted):
 - Access control: every costing page that exposes financial data (period list/detail, product and order breakdowns, cross-month comparison, monthly expenses, raw-material prices, and reference selling prices) requires a staff user or a user explicitly granted the `costing.view_costing_financials` permission. Ordinary authenticated users receive 403; write actions remain staff-only. The nav link is hidden from users without access. The permission is never assigned automatically.
 - The per-order breakdown totals row was corrected during this work.
 
+## Purchasing and supplier management (implemented)
+
+Implemented in this checkout:
+
+- Added the `purchasing` app: `Supplier`, `PurchaseOrder`, `PurchaseOrderLine`, `PurchaseReceipt`, and `PurchaseReceiptLine`, with migration `0001_initial`.
+- Supplier records hold contact data only (code, names, contact person, phone, email, address, notes, active flag) and no bank/tax/payment details; server-side validation normalizes the code and requires the Arabic name and a unique code.
+- Purchase orders use a generated unique reference, a supplier, order/expected dates, an optional supplier reference, notes, and lines (material, quantity, purchase unit, agreed unit price, notes). Lines validate the product's configured unit conversions and store the base quantity, base price, and line total. The lifecycle is `DRAFT → CONFIRMED`, with `CANCELLED` reachable from either state only while no receipt exists and requiring a reason; confirmed lines are locked.
+- Receipts post through `inventory.services.post_movement` into the shared ledger (one movement per receipt line, each with a unique `purchasing.purchase_receipt` source reference). They support partial receiving, derive received/outstanding quantities from non-reversed lines, block duplicate references and over-receiving, reject zero/negative quantities, and run atomically so a failed line rolls back the whole receipt. Correcting a receipt uses inventory reversal, which restores the outstanding quantity and derived state.
+- Purchase prices are snapshotted on each receipt line for traceability and shown on a read-only price-history page. Purchasing never writes `RawMaterialPrice` and does not change the costing valuation method; costing continues to price material issues with owner-entered provisional prices.
+- All purchasing pages and writes are staff-only, and the navigation link is hidden from other users. Arabic RTL templates follow the existing Bootstrap shell and pagination.
+
+### Purchasing verification
+
+- `manage.py check` passed and `makemigrations --check --dry-run` reported no changes.
+- SQLite (isolated in-memory test database): `manage.py test purchasing` ran 37 tests; 35 passed and 2 PostgreSQL row-lock concurrency tests were skipped.
+- PostgreSQL (`test_paper_factory` as `paper_factory_app`, PostgreSQL 18.6): `manage.py test --keepdb` ran the full suite — 123 tests passed, zero skipped — and preserved the test database. This includes the two purchasing concurrency tests (parallel duplicate-receipt reference and parallel over-receipt). `purchasing.0001_initial` is recorded as applied to `test_paper_factory`. `paper_factory` was never connected to or modified.
+- Purchasing tests cover supplier validation, the order lifecycle, partial/complete receiving with unit conversion, duplicate-reference and over-receipt prevention, rollback when a receipt line fails, inventory-reversal reconciliation of outstanding quantities, receipt immutability, price traceability without changing costing valuation, staff-only access control, and navigation gating.
+
 ## Remaining decisions and deployment work
 
 - Confirm the factory's negative-stock policy, lot/serial requirements, and any additional authorization matrix before extending behavior.
@@ -101,4 +119,4 @@ Implemented in this checkout (currently uncommitted):
 - Configure the actual HTTPS proxy/host and explicitly decide HSTS before deployment. Non-debug mode already enables HTTPS redirects and secure session/CSRF cookies.
 - Use a current supported Python 3.12 patch for deployment and rerun checks.
 
-The revised phase order remains: Prompt 0 foundation (closed) → Prompt 1 shared catalog/inventory (implemented) → Prompt 2 configurable manufacturing for both lines → shared accounting → purchasing → sales → consolidated and line-level reporting → cross-cutting deployment controls. See [PROMPT_SPECS.md](PROMPT_SPECS.md).
+The revised phase order remains: Prompt 0 foundation (closed) → Prompt 1 shared catalog/inventory (implemented) → Prompt 2 configurable manufacturing for both lines → shared accounting → purchasing (implemented) → sales → consolidated and line-level reporting → cross-cutting deployment controls. See [PROMPT_SPECS.md](PROMPT_SPECS.md).

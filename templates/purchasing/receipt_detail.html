@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ receipt.reference }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">استلام <bdi dir="ltr">{{ receipt.reference }}</bdi></h1>
+  <a class="btn btn-outline-secondary" href="{% url 'purchasing:order_detail' receipt.order.pk %}">أمر الشراء <bdi dir="ltr">{{ receipt.order.order_number }}</bdi></a>
+</div>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>المورد:</strong> {{ receipt.order.supplier.name_ar }}<br>
+    <strong>التاريخ:</strong> {{ receipt.received_date|date:"Y-m-d" }}<br>
+    <strong>مرجع المورد:</strong> {{ receipt.supplier_reference|default:"—" }}<br>
+    <strong>موقع الإيداع:</strong> {{ receipt.destination_location }}
+  </div>
+  <div class="col-md-6">
+    <strong>سجّل بواسطة:</strong> {{ receipt.actor }}<br>
+    <strong>وقت التسجيل:</strong> {{ receipt.created_at }}<br>
+    <strong>القيمة:</strong> {{ receipt.total_value|floatformat:2 }} ج.م
+  </div>
+</div>{% if receipt.notes %}<p class="mt-2 mb-0"><strong>ملاحظات:</strong> {{ receipt.notes }}</p>{% endif %}</div>
+<div class="table-responsive"><table class="table table-bordered align-middle">
+  <thead class="table-light"><tr><th>#</th><th>المادة/الصنف</th><th>الكمية المستلمة</th><th>بالوحدة الأساسية</th><th>سعر الوحدة</th><th>السعر للوحدة الأساسية</th><th>قيمة البند</th><th>حركة المخزون</th></tr></thead>
+  <tbody>
+    {% for line in lines %}
+    <tr>
+      <td>{{ line.sequence }}</td>
+      <td>{{ line.order_line.material.name_ar }} <bdi dir="ltr">{{ line.order_line.material.sku }}</bdi></td>
+      <td>{{ line.quantity }} {{ line.unit }}</td>
+      <td>{{ line.quantity_base }} {{ line.order_line.material.base_uom }}</td>
+      <td>{{ line.unit_price }} ج.م</td>
+      <td>{{ line.price_per_base_unit }} ج.م</td>
+      <td>{{ line.line_total|floatformat:2 }} ج.م</td>
+      <td><bdi dir="ltr">{{ line.movement.reference }}</bdi>{% if line.movement.reversal %} — <span class="text-danger">معكوس</span>{% endif %}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8" class="text-center">لا توجد بنود.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+<p class="text-muted small">مستندات الاستلام غير قابلة للتعديل؛ أي تصحيح يتم عبر عكس حركة المخزون من شاشة الحركات، فتنخفض الكمية المستلمة الصافية للأمر تلقائيًا.</p>
+{% endblock %}

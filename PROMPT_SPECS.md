@@ -108,6 +108,8 @@ Create one chart of accounts, periods, journal, and ledger system for the whole 
 
 Implement supplier, purchase order, receipt, and invoice workflows against the shared catalog, warehouses, inventory ledger, and accounting posting interface. Include tests for receipts into shared stock, UOM conversion, partial receipt, duplicate posting protection, rollback, and reports/postings attributable to a production line only where the source explicitly provides one. Do not divide suppliers or stock by production line.
 
+Status: suppliers, draft/confirmed purchase orders, partial receipts through the shared ledger, duplicate/over-receipt protection, atomic rollback, unit-conversion validation, and read-only purchase-price traceability are implemented in the `purchasing` app. Supplier invoices, payments, tax, and accounting postings are deferred to the shared-accounting phase because they need accountant decisions and do not affect the shared stock ledger.
+
 ### Prompt 5 — Shared sales and customers
 
 Implement customers, orders, deliveries, invoices, returns, and receipts against the shared catalog, common stock ledger, and accounting interface. Include tests for both product families, shared availability, delivery/return movements, line attribution where a finished product has an approved line association, consolidated sales totals, and no duplicate accounting/inventory effects.

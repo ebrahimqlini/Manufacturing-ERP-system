@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}أوامر الشراء{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">أوامر الشراء</h1>
+    <p class="text-muted small mb-0">أوامر التوريد من الموردين؛ لا تُحدَّث أرصدة المخزون إلا عند تسجيل الاستلام عبر حركات المخزون.</p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-primary" href="{% url 'purchasing:order_add' %}">أمر شراء جديد</a>
+    <a class="btn btn-outline-primary" href="{% url 'purchasing:supplier_list' %}">الموردون</a>
+    <a class="btn btn-outline-info text-dark" href="{% url 'purchasing:price_history' %}">أسعار الشراء</a>
+  </div>
+</div>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-4"><input name="q" value="{{ q }}" class="form-control" placeholder="رقم الأمر أو مرجع المورد أو المورد"></div>
+  <div class="col-md-3"><select name="status" class="form-select"><option value="">كل الحالات</option>{% for value,label in statuses %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="col-md-3"><select name="supplier" class="form-select"><option value="">كل الموردين</option>{% for supplier in suppliers %}<option value="{{ supplier.pk }}" {% if selected_supplier == supplier.pk|stringformat:'s' %}selected{% endif %}>{{ supplier.name_ar }}</option>{% endfor %}</select></div>
+  <div class="col-md-2"><button class="btn btn-outline-primary w-100">تصفية</button></div>
+</form>
+<div class="table-responsive"><table class="table table-striped bg-white align-middle">
+  <thead><tr><th>رقم الأمر</th><th>المورد</th><th>تاريخ الأمر</th><th>التوريد المتوقع</th><th>الحالة</th><th>حالة الاستلام</th><th>القيمة</th><th></th></tr></thead>
+  <tbody>
+    {% for order in page %}
+    <tr>
+      <td><a href="{% url 'purchasing:order_detail' order.pk %}"><bdi dir="ltr">{{ order.order_number }}</bdi></a></td>
+      <td>{{ order.supplier.name_ar }} <bdi dir="ltr">{{ order.supplier.code }}</bdi></td>
+      <td>{{ order.order_date|date:"Y-m-d" }}</td>
+      <td>{{ order.expected_date|date:"Y-m-d"|default:"—" }}</td>
+      <td>{{ order.get_status_display }}</td>
+      <td>{{ order.receipt_state_label }}</td>
+      <td>{{ order.ordered_value|floatformat:2 }} ج.م</td>
+      <td><a href="{% url 'purchasing:order_detail' order.pk %}">عرض</a></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8" class="text-center py-4 text-muted">لا توجد أوامر شراء.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+{% include "pagination.html" with page_obj=page %}
+{% endblock %}
