@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ title }}</h1>
+<form method="post" class="card card-body gap-3">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <h2 class="h5 mb-0">بنود أمر البيع</h2>
+  <p class="text-muted small mb-0">أدخل الصنف والكمية بوحدة البيع والسعر المتفق عليه للوحدة. تُحوَّل الكميات إلى الوحدة الأساسية تلقائيًا وفق تحويلات الصنف المعرَّفة.</p>
+  {{ formset.management_form }}
+  {% for error in formset.non_form_errors %}<div class="alert alert-danger mb-0">{{ error }}</div>{% endfor %}
+  <div class="table-responsive"><table class="table table-bordered align-middle">
+    <thead class="table-light"><tr><th>الصنف</th><th>الكمية</th><th>وحدة البيع</th><th>سعر الوحدة (ج.م)</th><th>ملاحظات</th><th>حذف</th></tr></thead>
+    <tbody>
+      {% for row in formset %}
+      <tr>
+        <td>{{ row.id }}{{ row.product }}{{ row.product.errors }}</td>
+        <td>{{ row.quantity }}{{ row.quantity.errors }}</td>
+        <td>{{ row.unit }}{{ row.unit.errors }}</td>
+        <td>{{ row.unit_price }}{{ row.unit_price.errors }}</td>
+        <td>{{ row.notes }}{{ row.notes.errors }}</td>
+        <td>{% if row.instance.pk %}{{ row.DELETE }}{% else %}<span class="text-muted small">—</span>{% endif %}</td>
+      </tr>
+      {% for error in row.non_field_errors %}<tr><td colspan="6" class="text-danger">{{ error }}</td></tr>{% endfor %}
+      {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary">حفظ المسودة</button>
+    {% if order %}<a class="btn btn-outline-secondary" href="{% url 'sales:order_detail' order.pk %}">رجوع</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'sales:order_list' %}">رجوع</a>{% endif %}
+  </div>
+</form>
+{% endblock %}

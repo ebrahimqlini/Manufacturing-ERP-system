@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ title }}</h1>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>العميل:</strong> {{ order.customer.name_ar }}<br>
+    <strong>تاريخ الأمر:</strong> {{ order.order_date|date:"Y-m-d" }}<br>
+    <strong>حالة الشحن:</strong> {{ order.shipment_state_label }}
+  </div>
+  <div class="col-md-6">
+    <strong>المطلوب:</strong> {{ order.ordered_quantity_base }}<br>
+    <strong>المشحون:</strong> {{ order.shipped_quantity_base }}<br>
+    <strong>المتبقي:</strong> {{ order.outstanding_quantity_base }}
+  </div>
+</div></div>
+<form method="post" class="card card-body gap-3">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  <div class="row g-3">
+    <div class="col-md-4">
+      {{ form.reference.label_tag }}{{ form.reference }}{{ form.reference.errors }}
+    </div>
+    <div class="col-md-4">
+      {{ form.customer_reference.label_tag }}{{ form.customer_reference }}{{ form.customer_reference.errors }}
+    </div>
+    <div class="col-md-4">
+      {{ form.shipment_date.label_tag }}{{ form.shipment_date }}{{ form.shipment_date.errors }}
+    </div>
+    <div class="col-md-6">
+      {{ form.source_location.label_tag }}{{ form.source_location }}{{ form.source_location.errors }}
+    </div>
+    <div class="col-md-6">
+      {{ form.notes.label_tag }}{{ form.notes }}{{ form.notes.errors }}
+    </div>
+  </div>
+  <h2 class="h5 mb-0">بنود الشحن</h2>
+  <p class="text-muted small mb-0">اترك الكمية صفرًا أو فارغة للبند الذي لا يُشحن الآن. لا يمكن شحن أكثر من الكمية المتبقية. القيمة التجارية تُحسب من الكمية بالوحدة الأساسية × السعر للوحدة الأساسية.</p>
+  <div class="table-responsive"><table class="table table-bordered align-middle">
+    <thead class="table-light"><tr><th>الصنف</th><th>المطلوب</th><th>المشحون</th><th>المتبقي</th><th>كمية الشحن</th><th>وحدة الشحن</th><th>سعر وحدة أمر البيع</th></tr></thead>
+    <tbody>
+      {% for row in form.outstanding_rows %}
+      <tr>
+        <td>{{ row.order_line.product.name_ar }} <bdi dir="ltr">{{ row.order_line.product.sku }}</bdi></td>
+        <td>{{ row.order_line.quantity_base }} {{ row.order_line.product.base_uom }}</td>
+        <td>{{ row.order_line.shipped_quantity_base }} {{ row.order_line.product.base_uom }}</td>
+        <td>{{ row.order_line.outstanding_quantity_base }} {{ row.order_line.product.base_uom }}</td>
+        <td>{{ row.quantity_field }}{{ row.quantity_field.errors }}</td>
+        <td>{{ row.unit_field }}{{ row.unit_field.errors }}</td>
+        <td>{{ row.order_line.unit_price }} ج.م / {{ row.order_line.unit }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">لا توجد كميات متبقية للشحن.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary">تسجيل الشحن</button>
+    <a class="btn btn-outline-secondary" href="{% url 'sales:order_detail' order.pk %}">رجوع</a>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}العملاء{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">العملاء</h1>
+    <p class="text-muted small mb-0">بيانات العملاء المشتركة لجميع خطوط الإنتاج.</p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-primary" href="{% url 'sales:customer_add' %}">عميل جديد</a>
+    <a class="btn btn-outline-primary" href="{% url 'sales:order_list' %}">أوامر البيع</a>
+  </div>
+</div>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-6"><input name="q" value="{{ q }}" class="form-control" placeholder="بحث بالرمز أو الاسم أو التواصل"></div>
+  <div class="col-md-4"><select name="active" class="form-select"><option value="">كل الحالات</option><option value="1" {% if selected_active == '1' %}selected{% endif %}>نشط</option><option value="0" {% if selected_active == '0' %}selected{% endif %}>غير نشط</option></select></div>
+  <div class="col-md-2"><button class="btn btn-outline-primary w-100">تصفية</button></div>
+</form>
+<div class="table-responsive"><table class="table table-striped bg-white align-middle">
+  <thead><tr><th>الرمز</th><th>العميل</th><th>مسؤول التواصل</th><th>الهاتف</th><th>الحالة</th><th></th></tr></thead>
+  <tbody>
+    {% for customer in page %}
+    <tr>
+      <td><bdi dir="ltr">{{ customer.code }}</bdi></td>
+      <td><a href="{% url 'sales:customer_detail' customer.pk %}">{{ customer.name_ar }}</a></td>
+      <td>{{ customer.contact_person|default:"—" }}</td>
+      <td><bdi dir="ltr">{{ customer.phone|default:"—" }}</bdi></td>
+      <td>{{ customer.active|yesno:"نشط,غير نشط" }}</td>
+      <td><a href="{% url 'sales:customer_edit' customer.pk %}">تعديل</a></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="6" class="text-center py-4 text-muted">لا يوجد عملاء.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+{% include "pagination.html" with page_obj=page %}
+{% endblock %}

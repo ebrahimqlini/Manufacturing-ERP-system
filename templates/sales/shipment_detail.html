@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ shipment.reference }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">شحن <bdi dir="ltr">{{ shipment.reference }}</bdi>
+    {% if shipment.is_fully_reversed %}<span class="badge bg-danger">معكوس بالكامل</span>
+    {% elif shipment.has_reversed_lines %}<span class="badge bg-warning text-dark">معكوس جزئيًا</span>{% endif %}
+  </h1>
+  <a class="btn btn-outline-secondary" href="{% url 'sales:order_detail' shipment.order.pk %}">أمر البيع <bdi dir="ltr">{{ shipment.order.order_number }}</bdi></a>
+</div>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>العميل:</strong> {{ shipment.order.customer.name_ar }}<br>
+    <strong>التاريخ:</strong> {{ shipment.shipment_date|date:"Y-m-d" }}<br>
+    <strong>مرجع العميل:</strong> {{ shipment.customer_reference|default:"—" }}<br>
+    <strong>موقع الصرف:</strong> {{ shipment.source_location }}
+  </div>
+  <div class="col-md-6">
+    <strong>سجّل بواسطة:</strong> {{ shipment.actor }}<br>
+    <strong>وقت التسجيل:</strong> {{ shipment.created_at }}<br>
+    <strong>قيمة المستند:</strong> {{ shipment.total_value|floatformat:2 }} ج.م<br>
+    {% if shipment.has_reversed_lines %}<strong>صافي غير المعكوس:</strong> {{ shipment.net_value|floatformat:2 }} ج.م{% endif %}
+  </div>
+</div>{% if shipment.notes %}<p class="mt-2 mb-0"><strong>ملاحظات:</strong> {{ shipment.notes }}</p>{% endif %}</div>
+<div class="table-responsive"><table class="table table-bordered align-middle">
+  <thead class="table-light"><tr><th>#</th><th>الصنف</th><th>الكمية المشحونة</th><th>بالوحدة الأساسية</th><th>سعر وحدة أمر البيع</th><th>السعر للوحدة الأساسية</th><th>قيمة البند</th><th>حركة المخزون</th></tr></thead>
+  <tbody>
+    {% for line in lines %}
+    <tr>
+      <td>{{ line.sequence }}</td>
+      <td>{{ line.order_line.product.name_ar }} <bdi dir="ltr">{{ line.order_line.product.sku }}</bdi></td>
+      <td>{{ line.quantity }} {{ line.unit }}</td>
+      <td>{{ line.quantity_base }} {{ line.order_line.product.base_uom }}</td>
+      <td>{{ line.unit_price }} ج.م / {{ line.order_line.unit }}</td>
+      <td>{{ line.price_per_base_unit }} ج.م</td>
+      <td>{{ line.line_total|floatformat:2 }} ج.م</td>
+      <td><bdi dir="ltr">{{ line.movement.reference }}</bdi>{% if line.movement.reversal %} — <span class="text-danger">معكوس</span>{% endif %}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8" class="text-center">لا توجد بنود.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+<p class="text-muted small">مستندات الشحن غير قابلة للتعديل؛ أي تصحيح يتم عبر عكس حركة المخزون من شاشة الحركات، فينخفض الكمية المشحونة الصافية للأمر تلقائيًا. قيمة المستند الأصلية لا تتغير بعد العكس، بينما يستبعد صافي المشحون البنود المعكوسة. لا تُنشئ هذه العملية قيودًا محاسبية.</p>
+{% endblock %}

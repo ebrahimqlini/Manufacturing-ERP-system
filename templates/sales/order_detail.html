@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{{ order.order_number }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">أمر بيع <bdi dir="ltr">{{ order.order_number }}</bdi></h1>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'sales:order_list' %}">كل الأوامر</a>
+    <a class="btn btn-outline-primary" href="{% url 'sales:customer_detail' order.customer.pk %}">بطاقة العميل</a>
+  </div>
+</div>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>العميل:</strong> {{ order.customer.name_ar }} <bdi dir="ltr">{{ order.customer.code }}</bdi><br>
+    <strong>تاريخ الأمر:</strong> {{ order.order_date|date:"Y-m-d" }}<br>
+    <strong>تاريخ التسليم المطلوب:</strong> {{ order.requested_delivery_date|date:"Y-m-d"|default:"—" }}<br>
+    <strong>مرجع العميل:</strong> {{ order.customer_reference|default:"—" }}<br>
+    <strong>أنشئ بواسطة:</strong> {{ order.created_by }}
+  </div>
+  <div class="col-md-6">
+    <strong>الحالة:</strong> {{ order.get_status_display }}<br>
+    <strong>حالة الشحن:</strong> {{ order.shipment_state_label }}<br>
+    <strong>إجمالي الأمر:</strong> {{ order.ordered_value|floatformat:2 }} ج.م<br>
+    <strong>قيمة المشحون:</strong> {{ order.shipped_value|floatformat:2 }} ج.م<br>
+    {% if order.confirmed_at %}<strong>تأكيد:</strong> {{ order.confirmed_at }} — {{ order.confirmed_by }}<br>{% endif %}
+    {% if order.completed_at %}<strong>آخر إكمال:</strong> {{ order.completed_at }} — {{ order.completed_by }}<br>{% endif %}
+    {% if order.reopened_at %}<strong>إعادة فتح:</strong> {{ order.reopened_at }} — {{ order.reopened_by }}<br><strong>السبب:</strong> {{ order.reopen_reason }}<br>{% endif %}
+    {% if order.cancelled_at %}<strong>إلغاء:</strong> {{ order.cancelled_at }} — {{ order.cancelled_by }}<br><strong>السبب:</strong> {{ order.cancel_reason }}{% endif %}
+  </div>
+</div>
+{% if order.notes %}<p class="mb-0 mt-2"><strong>ملاحظات:</strong> {{ order.notes }}</p>{% endif %}
+</div>
+{% if order.status == 'DRAFT' %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-outline-primary" href="{% url 'sales:order_edit' order.pk %}">تعديل المسودة</a>
+  <form method="post" action="{% url 'sales:order_confirm' order.pk %}">{% csrf_token %}<button class="btn btn-success">تأكيد الأمر</button></form>
+</div>
+<details class="mb-3"><summary class="text-danger">إلغاء الأمر</summary>
+  <form method="post" action="{% url 'sales:order_cancel' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب الإلغاء (مطلوب)" required><button class="btn btn-outline-danger">إلغاء</button></form>
+</details>
+{% elif order.status == 'CONFIRMED' %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  {% if order.can_ship %}<a class="btn btn-primary" href="{% url 'sales:shipment_add' order.pk %}">تسجيل شحن</a>{% endif %}
+  {% if order.can_complete %}<form method="post" action="{% url 'sales:order_complete' order.pk %}">{% csrf_token %}<button class="btn btn-success">إكمال الأمر</button></form>{% endif %}
+</div>
+{% if not has_shipments %}
+<details class="mb-3"><summary class="text-danger">إلغاء الأمر</summary>
+  <form method="post" action="{% url 'sales:order_cancel' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب الإلغاء (مطلوب)" required><button class="btn btn-outline-danger">إلغاء</button></form>
+</details>
+{% else %}
+<div class="alert alert-info">لهذا الأمر شحنات مسجلة؛ يبقى مفتوحًا للمتابعة ولا يمكن إلغاؤه.</div>
+{% endif %}
+{% elif order.status == 'COMPLETED' %}
+{% if order.can_reopen %}
+<div class="alert alert-warning">عُكست شحنة بعد إكمال الأمر، وأصبحت هناك كمية معلقة. أعد فتح الأمر لشحن الكمية المتبقية ثم إكماله من جديد.</div>
+<details class="mb-3"><summary class="text-danger">إعادة فتح الأمر</summary>
+  <form method="post" action="{% url 'sales:order_reopen' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب إعادة الفتح (مطلوب)" required><button class="btn btn-outline-danger">إعادة الفتح</button></form>
+</details>
+{% else %}
+<div class="alert alert-info">هذا الأمر مكتمل ولا توجد كمية معلقة لإعادة فتحها.</div>
+{% endif %}
+{% endif %}
+<h2 class="h5 mt-4">بنود الأمر</h2>
+<div class="table-responsive"><table class="table table-bordered align-middle">
+  <thead class="table-light"><tr><th>#</th><th>الصنف</th><th>الكمية المطلوبة</th><th>بالوحدة الأساسية</th><th>سعر الوحدة</th><th>إجمالي البند</th><th>المشحون</th><th>المتبقي</th></tr></thead>
+  <tbody>
+    {% for line in lines %}
+    <tr>
+      <td>{{ line.sequence }}</td>
+      <td>{{ line.product.name_ar }} <bdi dir="ltr">{{ line.product.sku }}</bdi></td>
+      <td>{{ line.quantity }} {{ line.unit }}</td>
+      <td>{{ line.quantity_base }} {{ line.product.base_uom }}</td>
+      <td>{{ line.unit_price }} ج.م / {{ line.unit }}</td>
+      <td>{{ line.line_total|floatformat:2 }} ج.م</td>
+      <td>{{ line.shipped_quantity_base }} {{ line.product.base_uom }}</td>
+      <td>{% if line.outstanding_quantity_base > 0 %}<span class="text-danger">{{ line.outstanding_quantity_base }}</span>{% else %}<span class="badge bg-success">مكتمل</span>{% endif %}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="8" class="text-center">لا توجد بنود.</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot><tr><th colspan="5">الإجمالي</th><th>{{ order.ordered_value|floatformat:2 }} ج.م</th><th>{{ order.shipped_quantity_base }}</th><th>{{ order.outstanding_quantity_base }}</th></tr></tfoot>
+</table></div>
+<h2 class="h5 mt-4">الشحنات</h2>
+<div class="table-responsive"><table class="table table-striped align-middle">
+  <thead><tr><th>المرجع</th><th>التاريخ</th><th>موقع الصرف</th><th>عدد البنود</th><th>قيمة المستند</th><th>سجّل بواسطة</th><th></th></tr></thead>
+  <tbody>
+    {% for shipment in shipments %}
+    <tr>
+      <td><a href="{% url 'sales:shipment_detail' shipment.pk %}"><bdi dir="ltr">{{ shipment.reference }}</bdi></a>
+        {% if shipment.is_fully_reversed %}<span class="badge bg-danger">معكوس بالكامل</span>
+        {% elif shipment.has_reversed_lines %}<span class="badge bg-warning text-dark">معكوس جزئيًا</span>{% endif %}
+      </td>
+      <td>{{ shipment.shipment_date|date:"Y-m-d" }}</td>
+      <td>{{ shipment.source_location }}</td>
+      <td>{{ shipment.line_count }}</td>
+      <td>{{ shipment.total_value|floatformat:2 }} ج.م
+        {% if shipment.has_reversed_lines %}<div class="small text-muted">صافي غير المعكوس: {{ shipment.net_value|floatformat:2 }} ج.م</div>{% endif %}
+      </td>
+      <td>{{ shipment.actor }}</td>
+      <td><a href="{% url 'sales:shipment_detail' shipment.pk %}">عرض</a></td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" class="text-center">لا توجد شحنات بعد.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+<p class="text-muted small">قيمة المستند هي القيمة الأصلية ولا تتغير بعد العكس. صافي المشحون في ملخص الأمر يستبعد البنود المعكوسة. أسعار البيع معروضة للمعلومات والتتبع فقط، ولا تُستخدم في تكاليف الإنتاج ولا تُنشئ قيودًا محاسبية.</p>
+{% endblock %}

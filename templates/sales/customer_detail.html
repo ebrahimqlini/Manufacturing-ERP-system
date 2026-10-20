@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ customer.name_ar }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ customer.name_ar }} <bdi dir="ltr" class="text-muted">{{ customer.code }}</bdi></h1>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary" href="{% url 'sales:customer_edit' customer.pk %}">تعديل</a>
+    <a class="btn btn-outline-secondary" href="{% url 'sales:customer_list' %}">كل العملاء</a>
+  </div>
+</div>
+<div class="card card-body mb-3"><div class="row g-3">
+  <div class="col-md-6">
+    <strong>الحالة:</strong> {{ customer.active|yesno:"نشط,غير نشط" }}<br>
+    <strong>الاسم بالإنجليزية:</strong> {{ customer.name_en|default:"—" }}<br>
+    <strong>مسؤول التواصل:</strong> {{ customer.contact_person|default:"—" }}
+  </div>
+  <div class="col-md-6">
+    <strong>الهاتف:</strong> <bdi dir="ltr">{{ customer.phone|default:"—" }}</bdi><br>
+    <strong>البريد الإلكتروني:</strong> <bdi dir="ltr">{{ customer.email|default:"—" }}</bdi><br>
+    <strong>أضيف بواسطة:</strong> {{ customer.created_by }}
+  </div>
+</div>
+{% if customer.address %}<p class="mt-2 mb-0"><strong>العنوان:</strong> {{ customer.address }}</p>{% endif %}
+{% if customer.notes %}<p class="mt-2 mb-0"><strong>ملاحظات:</strong> {{ customer.notes }}</p>{% endif %}
+</div>
+<h2 class="h5">أوامر البيع الأخيرة</h2>
+<div class="table-responsive"><table class="table table-striped align-middle">
+  <thead><tr><th>رقم الأمر</th><th>التاريخ</th><th>الحالة</th><th>حالة الشحن</th><th>القيمة</th></tr></thead>
+  <tbody>
+    {% for order in orders %}
+    <tr>
+      <td><a href="{% url 'sales:order_detail' order.pk %}"><bdi dir="ltr">{{ order.order_number }}</bdi></a></td>
+      <td>{{ order.order_date|date:"Y-m-d" }}</td>
+      <td>{{ order.get_status_display }}</td>
+      <td>{{ order.shipment_state_label }}</td>
+      <td>{{ order.ordered_value|floatformat:2 }} ج.م</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="5" class="text-center py-4 text-muted">لا توجد أوامر بيع لهذا العميل.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+{% endblock %}

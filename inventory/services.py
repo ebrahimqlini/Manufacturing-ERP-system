@@ -142,6 +142,8 @@ def reverse_movement(*, movement, reference, actor, reason):
         raise ValidationError("عكس الحركات متاح للمستخدمين المصرح لهم فقط.")
     if not reason or not reason.strip():
         raise ValidationError({"reason": "سبب العكس مطلوب."})
+    if movement.movement_type == StockMovement.Type.REVERSAL or movement.reversal_of_id:
+        raise ValidationError("لا يمكن عكس حركة عكس؛ حركات العكس نهائية للحفاظ على سجل التدقيق.")
     original_entries = list(movement.ledger_entries.select_related("location", "location__warehouse"))
     with transaction.atomic():
         _lock_item_locations(movement.product, [entry.location for entry in original_entries])

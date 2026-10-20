@@ -108,6 +108,46 @@ class InventoryLedgerTests(TestCase):
         self.assertEqual(StockLedgerEntry.objects.count(), before_count)
         self.assertFalse(StockMovement.objects.filter(reference="REVERSAL-TRANSFER-REV").exists())
 
+    def test_reversal_movement_cannot_be_reversed(self):
+        self.post("REVERSAL-ORIGINAL-STOCK", StockMovement.Type.RECEIPT, quantity="10", destination=self.a)
+        issue = self.post("REVERSAL-ORIGINAL-ISSUE", StockMovement.Type.ISSUE, quantity="4", source=self.a)
+        reversal = reverse_movement(
+            movement=issue,
+            reference="REVERSAL-ISSUE-REV",
+            actor=self.staff,
+            reason="تصحيح الصرف",
+        )
+        movement_count = StockMovement.objects.count()
+        entry_count = StockLedgerEntry.objects.count()
+        with self.assertRaisesMessage(ValidationError, "لا يمكن عكس حركة عكس"):
+            reverse_movement(
+                movement=reversal,
+                reference="REVERSAL-OF-REVERSAL",
+                actor=self.staff,
+                reason="محاولة غير صحيحة",
+            )
+        self.assertEqual(balance_for(self.cup, self.a), Decimal("10.000000000000"))
+        self.assertEqual(StockMovement.objects.count(), movement_count)
+        self.assertEqual(StockLedgerEntry.objects.count(), entry_count)
+        self.assertFalse(StockMovement.objects.filter(reference="REVERSAL-OF-REVERSAL").exists())
+
+    def test_original_movement_cannot_be_reversed_twice(self):
+        receipt = self.post("DOUBLE-REVERSAL-ORIGINAL", StockMovement.Type.RECEIPT, quantity="5", destination=self.a)
+        reverse_movement(movement=receipt, reference="DOUBLE-REVERSAL-ONCE", actor=self.staff, reason="تصحيح")
+        movement_count = StockMovement.objects.count()
+        entry_count = StockLedgerEntry.objects.count()
+        with self.assertRaisesMessage(ValidationError, "تم عكس هذه الحركة من قبل"):
+            reverse_movement(
+                movement=receipt,
+                reference="DOUBLE-REVERSAL-TWICE",
+                actor=self.staff,
+                reason="محاولة مكررة",
+            )
+        self.assertEqual(balance_for(self.cup, self.a), Decimal("0E-12"))
+        self.assertEqual(StockMovement.objects.count(), movement_count)
+        self.assertEqual(StockLedgerEntry.objects.count(), entry_count)
+        self.assertFalse(StockMovement.objects.filter(reference="DOUBLE-REVERSAL-TWICE").exists())
+
     def test_adjustments_require_reason_and_opening_is_controlled(self):
         with self.assertRaises(ValidationError):
             self.post("ADJ-1", StockMovement.Type.ADJUSTMENT_IN, quantity="2", destination=self.a)

@@ -1,6 +1,6 @@
 # Future implementation prompt specifications
 
-These phase contracts record the approved scope. Prompt 1 (catalog and inventory foundation) and Prompt 2 (configurable production management) are implemented in this checkout; later prompts remain planned. Every phase must stay within its prompt and must not silently decide open factory or accounting policies.
+These phase contracts record the approved scope. Prompts 1 and 2 (catalog/inventory and configurable production), monthly production costing, Prompt 4 (purchasing), and Prompt 5 (sales) are implemented in this checkout; the remaining prompts are planned. Every phase must stay within its prompt and must not silently decide open factory or accounting policies.
 
 ## Shared factory scope
 
@@ -113,6 +113,8 @@ Status: suppliers, draft/confirmed purchase orders, partial receipts through the
 ### Prompt 5 — Shared sales and customers
 
 Implement customers, orders, deliveries, invoices, returns, and receipts against the shared catalog, common stock ledger, and accounting interface. Include tests for both product families, shared availability, delivery/return movements, line attribution where a finished product has an approved line association, consolidated sales totals, and no duplicate accounting/inventory effects.
+
+Status: customer records, draft/confirmed/completed sales orders, partial shipments through the shared inventory ledger, duplicate/over-shipment protection, atomic rollback, unit-conversion validation, mixed-unit shipment valuation, terminal reversals with an explicit audited reopen path for completed orders, and price traceability are implemented in the `sales` app. Confirming an order does not issue stock; shipments post ISSUE movements through `inventory.services.post_movement`. Customer invoices, returns/credit notes, payments, tax, and accounting postings are deferred to the shared-accounting phase because they need accountant decisions. Sales prices never change `RawMaterialPrice`, production cost, or the costing valuation method.
 
 ### Prompt 6 — Consolidated and line-level reports
 

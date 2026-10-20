@@ -49,11 +49,23 @@
 - [x] Restrict all purchasing pages and writes to staff users and hide the navigation link from other users.
 - [x] Ran `manage.py check`, `makemigrations --check --dry-run`, and the full PostgreSQL suite with `--keepdb` (123 tests, zero skips, `test_paper_factory` preserved; `paper_factory` never targeted).
 
+## Sales and customer management (implemented; verification in IMPLEMENTATION_STATUS.md)
+
+- [x] Add `sales` models, services, views, admin, Arabic RTL templates, and migrations `0001_initial`/`0002_sales_order_reopen` for customers, sales orders, and shipments.
+- [x] Keep sales orders as commercial documents and post shipments only through the shared inventory ledger with unit-conversion validation and atomic rollback.
+- [x] Support partial/complete shipping with derived shipped/outstanding quantities, duplicate-reference and over-shipment prevention, and reversal-based correction.
+- [x] Calculate shipment value from base quantity × snapshotted base price, with correct mixed-unit valuation in both directions.
+- [x] Support explicit, audited reopening of a completed order when a reversal leaves outstanding quantity, then re-ship and re-complete it.
+- [x] Prevent a reversal movement from being reversed again, keeping sales reconciliation terminal and unambiguous.
+- [x] Snapshot sales prices for traceability without changing `RawMaterialPrice`, production cost, or the costing valuation method.
+- [x] Restrict all customer and sales pages and writes to staff users and hide the navigation link from other users.
+- [x] Ran `manage.py check`, `makemigrations --check --dry-run`, focused sales/inventory tests, and the full PostgreSQL suite with `--keepdb` (51 sales tests, 176 total, zero skips, `test_paper_factory` preserved; `paper_factory` never targeted).
+
 ## Later prompts
 
 - [ ] Shared accounting foundation with consolidated and production-line cost dimensions (originally labelled "Prompt 3"; the production-costing work above is the separate costing prompt).
 - [x] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger (implemented; see the section above). Supplier invoices, payments, tax, and accounting postings remain deferred to the accounting phase.
-- [ ] Prompt 5: shared customer/sales/delivery/returns workflows against the common inventory and accounting interfaces.
+- [x] Prompt 5: shared customer/sales/delivery workflows against the common inventory interface (implemented; see the section above). Customer invoices, returns, payments, tax, and accounting postings remain deferred to the accounting phase.
 - [ ] Prompt 6: read-only factory-wide and production-line reports, with reconciled consolidated totals.
 - [ ] Prompt 7: approved authorization matrix, audit review, backups/restore, monitoring, and deployment hardening.
 
