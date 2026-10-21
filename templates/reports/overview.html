@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}التقارير المجمعة{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">التقارير المجمعة</h1>
+    <p class="text-muted small mb-0">ملخص تشغيلي من أوامر البيع والشراء وحركات المخزون والإنتاج والتكاليف المحفوظة.</p>
+  </div>
+</div>
+{% include "reports/_filters.html" %}
+{% include "reports/_tabs.html" %}
+
+<div class="alert alert-warning">
+  <strong>حدود التقارير:</strong> لا يوجد دفتر محاسبي أو فواتير أو مدفوعات. قيم المبيعات والمشتريات قيم مستندات تشغيلية وليست إيرادًا أو مصروفًا محاسبيًا، ولا يُعرض ربح أو ذمم أو نقدية.
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">أوامر بيع غير ملغاة</span><strong class="fs-4">{{ sales.non_cancelled_orders_count }}</strong><span class="small text-muted">قيمة المستندات {{ sales.commercial_order_value }} ج.م</span></div></div>
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">أوامر شراء غير ملغاة</span><strong class="fs-4">{{ purchases.non_cancelled_orders_count }}</strong><span class="small text-muted">قيمة المستندات {{ purchases.commercial_order_value }} ج.م</span></div></div>
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">صافي قيمة الشحن</span><strong class="fs-4">{{ sales.net_shipped_value }}</strong><span class="small text-muted">بعد استبعاد السطور المعكوسة</span></div></div>
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">صافي قيمة الاستلام</span><strong class="fs-4">{{ purchases.net_received_value }}</strong><span class="small text-muted">بعد استبعاد السطور المعكوسة</span></div></div>
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">أصناف لها رصيد</span><strong class="fs-4">{{ inventory.inventory.products_with_balance }}</strong><span class="small text-muted">رصيد حالي من دفتر المخزون</span></div></div>
+  <div class="col-md-4 col-xl-2"><div class="card card-body h-100"><span class="text-muted small">إنتاج مفتوح</span><strong class="fs-4">{{ production.open_orders_count }}</strong><span class="small text-muted">مسودة / مطلق / قيد التنفيذ</span></div></div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm">
+      <h2 class="h5">تنبيهات جودة البيانات</h2>
+      {% if data_quality %}
+      <div class="table-responsive"><table class="table table-sm mb-0">
+        <thead><tr><th>التنبيه</th><th>الخطورة</th><th>العدد</th><th>الرسالة</th></tr></thead>
+        <tbody>
+          {% for warning in data_quality %}
+          <tr>
+            <td class="ltr">{{ warning.code }}</td>
+            <td>{% if warning.severity == 'ERROR' %}<span class="badge bg-danger">{{ warning.severity }}</span>{% elif warning.severity == 'WARNING' %}<span class="badge bg-warning text-dark">{{ warning.severity }}</span>{% else %}<span class="badge bg-info text-dark">{{ warning.severity }}</span>{% endif %}</td>
+            <td class="ltr">{{ warning.count|default_if_none:"—" }}</td>
+            <td class="small">{{ warning.message_ar }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}<p class="text-muted mb-0">لا توجد تنبيهات.</p>{% endif %}
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm mb-3">
+      <h2 class="h5">المخزون المنخفض</h2>
+      {% if inventory.low_stock.alerts %}
+      <ul class="list-group list-group-flush">
+        {% for row in inventory.low_stock.alerts|slice:":8" %}
+        <li class="list-group-item px-0 d-flex justify-content-between gap-2"><span>{{ row.sku }} — {{ row.name_ar }}</span><span class="ltr">{{ row.current_quantity_base }} / {{ row.threshold_quantity_base }} {{ row.base_uom }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p class="text-muted mb-0">لا توجد أصناف تحت حد المخزون.</p>{% endif %}
+    </div>
+    <div class="card card-body shadow-sm">
+      <h2 class="h5">التكاليف</h2>
+      <p class="mb-1">فترات في الفترة: <strong>{{ costing.periods_count }}</strong></p>
+      <p class="mb-1">فترات غير مكتملة: <strong>{{ costing.review_summary.incomplete_periods }}</strong></p>
+      <p class="mb-0">بنود تكلفة تحتاج مراجعة: <strong>{{ costing.review_summary.incomplete_entries }}</strong></p>
+      <a class="btn btn-sm btn-outline-primary mt-3" href="{% url 'reports:costing' %}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">عرض تقرير التكاليف</a>
+    </div>
+    <div class="card card-body shadow-sm mt-3">
+      <h2 class="h5">الأرباح والخسائر الشهرية</h2>
+      <p class="mb-1">فترات محفوظة: <strong>{{ profit.periods_count }}</strong></p>
+      <p class="mb-1">غير مكتملة: <strong>{{ profit.review_summary.incomplete_periods }}</strong></p>
+      <p class="mb-0">أحدث رصيد خسائر: <strong class="ltr">{{ profit.range_totals.latest_closing_accumulated_loss|default:"—" }}</strong></p>
+      <a class="btn btn-sm btn-outline-success mt-3" href="{% url 'reports:profit' %}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">عرض تقرير الأرباح</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

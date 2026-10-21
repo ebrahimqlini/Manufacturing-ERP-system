@@ -13,6 +13,8 @@ from manufacturing.models import MaterialIssue, ProductionLine, ProductionResult
 from .models import (
     CostingPeriod,
     MonthlyExpense,
+    MonthlyProfitCOGSLine,
+    MonthlyProfitPeriod,
     ProductCostingEntry,
     ProductSellingPrice,
     ProductionOrderCostingEntry,
@@ -237,6 +239,19 @@ def _yield_analysis(product, production_line, rolls_raw_base, good_units_base, n
     return analysis
 
 
+def _release_draft_cogs_source_links(period):
+    """Detach provisional COGS rows before replacing this period's cost entries.
+
+    A reopened monthly result keeps its old COGS detail for audit until it is
+    recalculated. Those draft rows must not prevent the corrected costing
+    entries from being replaced; finalized rows are never touched here.
+    """
+    MonthlyProfitCOGSLine.objects.filter(
+        source_costing_entry__period=period,
+        profit_period__status=MonthlyProfitPeriod.Status.DRAFT,
+    ).update(source_costing_entry=None)
+
+
 def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_policy=None, actor=None):
     """Calculate the monthly production cost from actual issues and output.
 
@@ -246,6 +261,15 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
     excluded because their movement carries a reversal.
     """
     _staff(actor)
+    if MonthlyProfitPeriod.objects.filter(
+        year=year,
+        month=month,
+        status=MonthlyProfitPeriod.Status.FINALIZED,
+    ).exists():
+        raise ValidationError(
+            "لا يمكن إعادة احتساب التكاليف بعد اعتماد نتيجة الشهر المالي؛ "
+            "أعد فتح فترة الأرباح والخسائر أولاً."
+        )
     start_date, end_date = get_month_date_range(year, month)
 
     with transaction.atomic():
@@ -274,9 +298,21 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
         period.start_date = start_date
         period.end_date = end_date
 
-        expenses = MonthlyExpense.objects.filter(year=year, month=month)
+        expenses = MonthlyExpense.objects.filter(
+            year=year,
+            month=month,
+            status=MonthlyExpense.Status.ACTIVE,
+        )
         labor_recorded = expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).exists()
+        electricity_recorded = expenses.filter(
+            expense_type=MonthlyExpense.ExpenseType.ELECTRICITY
+        ).exists()
+        water_recorded = expenses.filter(
+            expense_type=MonthlyExpense.ExpenseType.WATER
+        ).exists()
         period.labor_recorded = labor_recorded
+        period.electricity_recorded = electricity_recorded
+        period.water_recorded = water_recorded
         labor_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).aggregate(s=Sum("amount"))["s"])
         electricity_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).aggregate(s=Sum("amount"))["s"])
         water_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.WATER).aggregate(s=Sum("amount"))["s"])
@@ -373,6 +409,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             slot["scrap_units"] += result.scrap_quantity_base
 
         if not order_data:
+            _release_draft_cogs_source_links(period)
             period.product_entries.all().delete()
             period.order_entries.all().delete()
             period.materials_total = Decimal("0.00")
@@ -495,8 +532,11 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                 bucket["electricity"] += exp.amount
             elif exp.expense_type == MonthlyExpense.ExpenseType.WATER:
                 bucket["water"] += exp.amount
-            else:
+            elif exp.expense_type == MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL:
                 bucket["other"] += exp.amount
+            # MAINTENANCE is a period operating expense deducted once by the
+            # monthly profit calculation. It is intentionally not allocated into
+            # product manufacturing cost, so it cannot be deducted twice.
 
         ALLOCATION_FIELDS = {
             "labor": "labor_allocated",
@@ -561,12 +601,12 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                 "لم تُسجل مصاريف العمالة لهذا الشهر رغم وجود إنتاج؛ لا يُفترض أن قيمتها صفر — "
                 "سجّل مصاريف العمالة الفعلية، أو 0.00 صراحةً عند تأكيد عدم وجود مصروف."
             )
-        if not expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).exists():
+        if not electricity_recorded:
             is_complete = False
             missing_notes.append(
                 "لم تُسجل مصاريف الكهرباء لهذا الشهر رغم وجود إنتاج؛ لا يُفترض أن قيمتها صفر — سجّل فاتورة الكهرباء الفعلية."
             )
-        if not expenses.filter(expense_type=MonthlyExpense.ExpenseType.WATER).exists():
+        if not water_recorded:
             is_complete = False
             missing_notes.append(
                 "لم تُسجل مصاريف المياه لهذا الشهر رغم وجود إنتاج؛ لا يُفترض أن قيمتها صفر — سجّل فاتورة المياه الفعلية."
@@ -676,6 +716,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
         ProductionOrderCostingEntry.objects.bulk_create(order_entries)
 
         # --- Persist product-level entries ---
+        _release_draft_cogs_source_links(period)
         period.product_entries.all().delete()
         product_entries = []
         grand_materials = Decimal("0.00")
@@ -699,11 +740,15 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     missing_notes.append(note)
 
             if pdata["good_units"] > 0:
+                material_cost_per_unit = (
+                    pdata["good_material_cost"] / pdata["good_units"]
+                ).quantize(FOUR_DECIMALS, rounding=ROUND_HALF_UP)
                 cost_per_unit = (pdata["good_material_cost"] + pdata["labor_allocated"]
                                  + pdata["electricity_allocated"] + pdata["water_allocated"]
                                  + pdata["other_allocated"]) / pdata["good_units"]
                 cost_per_unit = cost_per_unit.quantize(FOUR_DECIMALS, rounding=ROUND_HALF_UP)
             else:
+                material_cost_per_unit = None
                 cost_per_unit = None
                 is_complete = False
                 pdata["requires_review"] = True
@@ -760,6 +805,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     allocated_other_cost=pdata["other_allocated"],
                     total_production_cost=product_total,
                     cost_per_good_unit=cost_per_unit,
+                    material_cost_per_good_unit=material_cost_per_unit,
                     selling_price_snapshot=selling_price_obj.selling_price if selling_price_obj else None,
                     material_breakdown=breakdown,
                     calculation_status=(
@@ -805,6 +851,16 @@ def finalize_costing_period(*, period, actor):
         period = CostingPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status == CostingPeriod.Status.FINALIZED:
             raise ValidationError("هذه الفترة معتمدة نهائيًا بالفعل.")
+
+        # Recalculate immediately before freezing so a stale draft can never
+        # persist values from before a later issue, output record, price, or
+        # expense. The row lock is held for the whole recalculation. A period
+        # without production-order detail has no production source to refresh;
+        # it is normally incomplete and will fail the completeness check below.
+        if period.order_entries.exists():
+            period = calculate_monthly_costing(
+                year=period.year, month=period.month, actor=actor
+            )
         if not period.is_complete:
             raise ValidationError("لا يمكن اعتماد فترة التكاليف لوجود بيانات ناقصة أو أسعار غير محددة.")
 
@@ -826,6 +882,31 @@ def reopen_costing_period(*, period, actor, reason):
         period = CostingPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status != CostingPeriod.Status.FINALIZED:
             raise ValidationError("يمكن إعادة الفترات المعتمدة نهائيًا فقط.")
+        if MonthlyProfitPeriod.objects.filter(
+            year=period.year,
+            month=period.month,
+            status=MonthlyProfitPeriod.Status.FINALIZED,
+        ).exists():
+            raise ValidationError(
+                "لا يمكن إعادة فتح فترة التكاليف بعد اعتماد نتيجة الشهر المالي؛ "
+                "أعد فتح فترة الأرباح والخسائر أولاً."
+            )
+        source_usage = (
+            MonthlyProfitCOGSLine.objects.filter(
+                source_period=period,
+                profit_period__status=MonthlyProfitPeriod.Status.FINALIZED,
+            )
+            .select_related("profit_period")
+            .order_by("-profit_period__year", "-profit_period__month")
+            .first()
+        )
+        if source_usage is not None:
+            used_by = source_usage.profit_period
+            raise ValidationError(
+                "لا يمكن إعادة فتح فترة التكاليف لأنها مصدر تكلفة البضاعة المباعة "
+                f"لفترة أرباح معتمدة ({used_by.year}/{used_by.month:02d})؛ "
+                "أعد فتح فترة الأرباح والخسائر تلك أولاً."
+            )
 
         period.status = CostingPeriod.Status.DRAFT
         period.reopened_at = timezone.now()

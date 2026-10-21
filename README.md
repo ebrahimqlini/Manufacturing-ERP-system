@@ -1,6 +1,6 @@
 # Paper-products factory ERP foundation
 
-Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, required labor/electricity/water records with a confirmed zero kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots kept separate from costing valuation. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation. A versioned mobile API foundation under `/api/v1/` adds token authentication, strict customer data isolation, draft customer order requests, and an owner dashboard projection over existing operational and persisted costing data. Customer-submitted orders with zero prices cannot be confirmed or shipped until staff review every line; dashboard document counts and production date bases are explicit, and persisted costing allocation/reconciliation fields are exposed without recalculating product costs.
+Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, required labor/electricity/water records with a confirmed zero kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots kept separate from costing valuation. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation. A versioned mobile API foundation under `/api/v1/` adds token authentication, strict customer data isolation, draft customer order requests, and an owner dashboard projection over existing operational and persisted costing data. Customer-submitted orders with zero prices cannot be confirmed or shipped until staff review every line; dashboard document counts and production date bases are explicit, and persisted costing allocation/reconciliation fields are exposed without recalculating product costs. A monthly management-profit step adds operating-expense recording, COGS for shipped quantities from persisted direct-material costs, finalization controls, cross-month and year-boundary loss carry-forward, a staff profit report, and a read-only owner API projection. Its figures are management operating results, not final accounting net profit.
 
 The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers remain out of scope until factory policy is confirmed. Monthly product costing is implemented, but it prices material consumption with owner-entered provisional standard prices and does not use FIFO or weighted average, because no valuation method is approved and the stock ledger carries no cost; costs are therefore provisional until an accountant approves a valuation method. Shared purchasing and supplier management is implemented: suppliers, purchase orders, and receipts through the shared ledger, where purchase prices are recorded for traceability only and do not change the provisional costing valuation. Shared sales and customer management is implemented: customers, sales orders, and shipments through the shared ledger, with mixed-unit shipment valuation, an explicit audited reopen path when a reversal leaves quantity outstanding, and sales prices recorded for traceability only without creating accounting entries or changing costing valuation. Supplier invoices, customer invoices, payments, and accounting postings remain part of the later accounting phase. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
 
@@ -69,6 +69,13 @@ GET  /api/v1/owner/purchases/  purchasing section
 GET  /api/v1/owner/inventory/  inventory and low-stock section
 GET  /api/v1/owner/production/ production section
 GET  /api/v1/owner/costing/    persisted monthly costing section
+GET  /api/v1/owner/profit/     monthly management result and loss carry-forward
+GET  /api/v1/owner/sales/orders/       paginated sales-order detail
+GET  /api/v1/owner/purchases/orders/   paginated purchase-order detail
+GET  /api/v1/owner/inventory/stock/    paginated current stock
+GET  /api/v1/owner/inventory/movements/ paginated stock movements
+GET  /api/v1/owner/production/orders/  paginated production orders
+GET  /api/v1/owner/costing/periods/    paginated costing periods
 GET  /api/v1/schema/           staff-only OpenAPI schema
 GET  /api/v1/docs/             staff-only interactive documentation
 ```
@@ -76,11 +83,20 @@ GET  /api/v1/docs/             staff-only interactive documentation
 Customer order requests create draft sales orders only. They never confirm the
 order, reserve stock, create a shipment, or deduct inventory. Customer catalog
 visibility and low-stock thresholds are explicit product settings; staff must
-mark products for the customer catalog. Owner dashboard values are read from
-current persisted records with no caching. Accounting-derived profit,
+mark products for the customer catalog. Owner dashboard and detail values are read
+from current persisted records with no caching. Accounting-derived net profit,
 receivables, payables, and cash are intentionally unavailable because those
-modules are not implemented; see [API.md](API.md) for endpoint details,
-permissions, response semantics, and limitations.
+modules are not implemented. The separate monthly management result and loss
+carry-forward are persisted and clearly labelled as non-accounting; see
+[API.md](API.md) for endpoint details, permissions, response semantics, and
+limitations.
+
+Staff-only web reports are served under `/reports/` for the consolidated overview,
+sales, purchasing, inventory, production, costing, and monthly profit. They use the same
+read-only reporting service as the owner API, keep quantities separated by base
+unit, expose date/status bases, show incomplete-costing and data-quality warnings,
+and allow production filtering by line. Sales, purchasing, and the shared
+inventory ledger have no duplicated per-line data.
 
 ## Migration and test workflow
 
@@ -88,12 +104,12 @@ After changing models, create migrations with `python manage.py makemigrations`,
 
 ## Planned app boundaries
 
-`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. `api` holds the versioned mobile API, serializers, permissions, dashboard projections, and API tests. Implemented domain apps are `catalog`, `inventory`, `manufacturing`, `costing`, `purchasing`, and `sales`. Planned apps are `accounting` and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
+`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. `api` holds the versioned mobile API, serializers, permissions, dashboard projections, and API tests. `reports` is a read-only service and staff web-report app over the shared domain records. Implemented domain apps are `catalog`, `inventory`, `manufacturing`, `costing`, `purchasing`, `sales`, and `reports`. The planned app is `accounting`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
 
 ## Project records
 
 - [DECISIONS.md](DECISIONS.md): architecture and open policy decisions.
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md): current phase and verified state.
 - [TODO.md](TODO.md): ordered next work.
-- [PROMPT_SPECS.md](PROMPT_SPECS.md): implemented Prompt 1 contract and later implementation scope and acceptance tests.
+- [PROMPT_SPECS.md](PROMPT_SPECS.md): phase contracts, implemented scope notes, and acceptance tests.
 - [API.md](API.md): mobile API endpoints, authentication, permissions, dashboard semantics, and limitations.

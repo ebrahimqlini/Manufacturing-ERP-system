@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}تقرير المبيعات المجمع{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="h3 mb-0">تقرير المبيعات المجمع</h1><p class="text-muted small mb-0">أوامر البيع والشحنات بفترات مستندية صريحة، دون اعتبار القيم إيرادًا محاسبيًا.</p></div>
+</div>
+{% include "reports/_filters.html" %}
+{% include "reports/_tabs.html" %}
+
+{% if sales.customer_price_review_pending_count or sales.legacy_unpriced_confirmed_orders_count %}
+<div class="alert alert-warning">
+  طلبات عملاء بأسعار صفرية تحتاج مراجعة:
+  مسودة <strong>{{ sales.customer_price_review_pending_count }}</strong>،
+  غير مسودة <strong>{{ sales.legacy_unpriced_confirmed_orders_count }}</strong>.
+  لا تُعد هذه القيم مبيعات محققة.
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي المستندات</span><strong class="fs-4">{{ sales.orders_total }}</strong><span class="small text-muted">ملغاة: {{ sales.cancelled_orders_count }}</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">قيمة أوامر غير ملغاة</span><strong class="fs-4">{{ sales.commercial_order_value }}</strong><span class="small text-muted">لقطة مستند تجاري</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">صافي قيمة الشحن</span><strong class="fs-4">{{ sales.net_shipped_value }}</strong><span class="small text-muted">معكوس: {{ sales.reversed_shipment_value }}</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">شحنات</span><strong class="fs-4">{{ sales.shipments_count }}</strong><span class="small text-muted">نشطة: {{ sales.active_shipments_count }} / معكوسة كليًا: {{ sales.fully_reversed_shipments_count }}</span></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-6">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">حالات أوامر البيع</h2>
+      <table class="table table-sm mb-0"><thead><tr><th>الحالة</th><th>العدد</th></tr></thead><tbody>
+        {% for row in sales.status_count_rows %}<tr><td>{{ row.label }}</td><td class="ltr">{{ row.count }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="small text-muted mb-0 mt-2">العدد يشمل كل مستندات الفترة، بما فيها الملغاة. القيم النشطة تستبعد الملغاة.</p>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">حالة الشحن</h2>
+      <p class="mb-1">أوامر مشحونة جزئيًا: <strong>{{ sales.partially_shipped_orders_count }}</strong></p>
+      <p class="mb-1">أوامر بلا شحن نشط: <strong>{{ sales.unshipped_orders_count }}</strong></p>
+      <p class="mb-0">أوامر مشحونة بالكامل: <strong>{{ sales.fully_shipped_orders_count }}</strong></p>
+      <p class="small text-muted mb-0">الأساس: الكمية الأساسية النشطة مقابل الكمية المطلوبة، مع استبعاد الحركات المعكوسة.</p>
+    </div>
+  </div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">الكميات بوحدات المخزون الأساسية</h2>
+  <p class="small text-muted">لا تُجمع كميات ذات أبعاد مختلفة؛ كل وحدة أساسية معروضة منفصلة.</p>
+  <div class="table-responsive"><table class="table table-sm">
+    <thead><tr><th>الوحدة</th><th>مطلوب</th><th>مشحون نشط</th><th>معكوس</th><th>متبقٍ</th></tr></thead>
+    <tbody>
+      {% for row in sales.quantity_summary %}
+      <tr><td>{{ row.base_uom_name_ar }} <span class="text-muted ltr">({{ row.base_uom }})</span></td><td class="ltr">{{ row.ordered_quantity_base }}</td><td class="ltr">{{ row.shipped_quantity_base }}</td><td class="ltr">{{ row.reversed_quantity_base }}</td><td class="ltr">{{ row.outstanding_quantity_base }}</td></tr>
+      {% empty %}<tr><td colspan="5" class="text-muted">لا توجد كميات مطلوبة في الفترة.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  <p class="small text-muted mb-0">{{ sales.quantity_basis }}</p>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أهم العملاء</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>العميل</th><th>الأوامر</th><th>القيمة</th></tr></thead><tbody>
+        {% for row in sales.top_customers %}<tr><td>{{ row.customer_code }} — {{ row.customer_name }}</td><td class="ltr">{{ row.order_count }}</td><td class="ltr">{{ row.ordered_value }}</td></tr>
+        {% empty %}<tr><td colspan="3" class="text-muted">لا توجد مبيعات في الفترة.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أهم المنتجات</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>الصنف</th><th>الكمية</th><th>القيمة</th></tr></thead><tbody>
+        {% for row in sales.top_products %}<tr><td>{{ row.sku }} — {{ row.name_ar }}</td><td class="ltr">{{ row.quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.ordered_value }}</td></tr>
+        {% empty %}<tr><td colspan="3" class="text-muted">لا توجد بيانات.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">أحدث أوامر البيع</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الأمر</th><th>العميل</th><th>التاريخ</th><th>الحالة</th><th>القيمة</th><th>الشحن</th><th>التسعير</th></tr></thead>
+    <tbody>{% for row in sales.recent_orders %}
+      <tr><td><bdi class="ltr">{{ row.order_number }}</bdi></td><td>{{ row.customer_name }}</td><td class="ltr">{{ row.order_date|date:"Y-m-d" }}</td><td>{{ row.status_display }}</td><td class="ltr">{{ row.ordered_value }}</td><td>{{ row.shipment_state_display }}</td><td>{{ row.pricing_status }}</td></tr>
+    {% empty %}<tr><td colspan="7" class="text-muted">لا توجد أوامر.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+
+<div class="card card-body shadow-sm">
+  <h2 class="h5">أحدث الشحنات</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>المرجع</th><th>أمر البيع</th><th>العميل</th><th>التاريخ</th><th>صافي القيمة</th><th>الحالة</th></tr></thead>
+    <tbody>{% for row in sales.recent_shipments %}
+      <tr><td><bdi class="ltr">{{ row.reference }}</bdi></td><td class="ltr">{{ row.order_number }}</td><td>{{ row.customer_name }}</td><td class="ltr">{{ row.shipment_date|date:"Y-m-d" }}</td><td class="ltr">{{ row.net_value }}</td><td>{% if row.is_fully_reversed %}<span class="badge bg-danger">معكوسة كليًا</span>{% elif row.has_reversed_lines %}<span class="badge bg-warning text-dark">معكوسة جزئيًا</span>{% else %}<span class="badge bg-success">نشطة</span>{% endif %}</td></tr>
+    {% empty %}<tr><td colspan="6" class="text-muted">لا توجد شحنات.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ sales.value_basis }}</p>
+</div>
+{% endblock %}

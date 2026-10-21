@@ -121,12 +121,46 @@ Status: customer records, draft/confirmed/completed sales orders, partial shipme
 
 Implement a versioned REST API foundation for the future Flutter customer and owner applications without creating a second inventory, sales, purchasing, or costing ledger. Use token authentication and explicit customer/owner permissions. Customer endpoints may read only the authenticated customer's own profile, explicitly customer-visible products, authorized prices, and own orders, and may submit draft order requests through the existing sales service. Owner endpoints may project current persisted sales, purchasing, inventory, production, customer/supplier, and costing data for the dashboard.
 
-Status: implemented and hardened under `/api/v1/` with Django REST Framework and drf-spectacular. Customer catalog visibility is controlled by `Product.available_to_customers`; low-stock alerts use the explicit `Product.low_stock_threshold`; customer accounts are active non-staff users linked to an active customer. Customer order requests create draft sales orders with zero prices pending staff review and never confirm, reserve, ship, or deduct inventory. Confirmation and shipment are blocked until every line has a positive reviewed price, with `PENDING_REVIEW`/`RECORDED`/`UNPRICED` pricing status exposed separately from order status. The owner dashboard marks commercial document values as non-accounting, separates total from cancelled/active/reversed document counts, states production order-created versus output-recorded date bases, reads persisted monthly costing allocations/reconciliation without recalculating product costs, and returns `null` plus missing dependencies for profit, receivables, payables, and cash because accounting/invoicing/payments are not implemented. Responses are computed from current persisted data with no caching; no WebSockets, push notifications, or live-update infrastructure is implemented. Customer order-request idempotency keys and the Flutter applications remain future work. This API phase does not implement the consolidated reporting scope below.
+Status: implemented and hardened under `/api/v1/` with Django REST Framework and drf-spectacular. Customer catalog visibility is controlled by `Product.available_to_customers`; low-stock alerts use the explicit `Product.low_stock_threshold`; customer accounts are active non-staff users linked to an active customer. Customer order requests create draft sales orders with zero prices pending staff review and never confirm, reserve, ship, or deduct inventory. Confirmation and shipment are blocked until every line has a positive reviewed price, with `PENDING_REVIEW`/`RECORDED`/`UNPRICED` pricing status exposed separately from order status. The owner dashboard marks commercial document values as non-accounting, separates total from cancelled/active/reversed document counts, states production order-created versus output-recorded date bases, reads persisted monthly costing allocations/reconciliation without recalculating product costs, and returns `null` plus missing dependencies for profit, receivables, payables, and cash because accounting/invoicing/payments are not implemented. Responses are computed from current persisted data with no caching; no WebSockets, push notifications, or live-update infrastructure is implemented. Customer order-request idempotency keys and the Flutter applications remain future work. Consolidated reporting is implemented in Prompt 7 below.
 
 ### Prompt 7 — Consolidated and line-level reports
 
 Implement read-only reports over shared data for factory-wide totals and separate paper-cup/fiber-container line filters. Cover production quantity, WIP, scrap, material consumption, costs, purchasing, sales, inventory, and accounting as available. Test that consolidated totals reconcile to attributed line totals plus unallocated amounts and that filtering never duplicates shared inventory/accounting entries. Do not invent KPI formulas or rates.
 
-### Prompt 8 — Cross-cutting controls and deployment readiness
+Status: implemented in the read-only `reports` app and exposed through staff web pages under `/reports/` plus the existing `/api/v1/owner/` section and detail endpoints. Reports cover sales, purchasing, inventory movement/current balances, production status/plan/consumption/output/yield, persisted monthly costing, customer/supplier totals, recent activity, and data-quality warnings. Quantities are grouped by base UOM and never mixed; money is formatted as `Decimal` with two-decimal currency precision. Cancelled orders and fully reversed documents are excluded from active totals and reported separately. Production can be filtered by line; sales, purchasing, and shared inventory have no duplicated per-line ledger and are not artificially allocated. Production output is reconciled against displayed line totals with an explicit unallocated check. Costing is read from persisted records and never recalculated by the report/API layer; missing labor/electricity/water, fallback allocations, and incomplete entries remain review warnings, and explicit `0.00` remains a confirmed zero. No accounting, revenue, profit, receivables, payables, cash, WIP balance, or historical as-of-date stock is invented. Responses are request-time fresh with no caching, WebSockets, or push notifications.
 
-Implement the approved authorization matrix, audit review, backup/restore automation, operational monitoring, and deployment hardening only after policies and environment are confirmed. Test least privilege, audit coverage, backup restoration, and secure settings. Keep the shared architecture and avoid per-line duplicated controls or databases.
+### Prompt 8 — Monthly profit, operating expenses, and loss carry-forward
+
+Implement a persisted monthly management result using authoritative sales, shipment, costing,
+and expense records. Gross profit is net sales minus cost of goods sold. The monthly result
+is gross profit minus recorded labor, electricity, maintenance, and other operating
+expenses. COGS applies only to shipped quantities and uses persisted direct-material unit
+costs; unsold manufactured inventory remains inventory. Water is outside the agreed profit
+calculation. Operating expenses are deducted once and are not reallocated across lines, and
+labor must not be both product cost and operating expense.
+
+Record each expense with category, EGP amount, period, expense/payment dates, description,
+reference, creator/timestamps, active/reversed status, and reversal traceability. A missing
+category is different from an explicitly recorded `0.00`. Persist the opening and closing
+accumulated loss, loss recovered, and profit remaining after recovery. Carry losses across
+consecutive months and year boundaries without resetting them or turning them into new
+expenses. Prevent duplicate finalization and loss recovery. Protect finalized periods from
+silent changes; authorized corrections and reopening must preserve an audit trail.
+
+Status: implemented. `MonthlyProfitPeriod`/`MonthlyProfitCOGSLine` persist the result and
+COGS detail; `MonthlyExpense` gained maintenance, dates/reference/status/reversal fields;
+staff pages under `/costing/profit/`, a `/reports/profit/` report, dashboard data, and a
+read-only `/api/v1/owner/profit/` endpoint expose the result. Finalization requires complete
+expense categories and authoritative COGS. Finalized months block expense edits, costing
+recalculation, late shipments, shipment reversals, and deletion until reopened. Later
+finalized months block older finalization/reopen until reopened first. Reopening requires a
+reason. The UI/API label the
+figures as monthly result and remaining profit after recovery, never final accounting net
+profit. Verified with the required `−20,000` then `+35,000` recovery scenario, the `10,000`
+partial-recovery case, consecutive losses, zero results, year-boundary carry-forward,
+missing-vs-zero expenses, unsold/partial/credit sales, reversals, duplicate expenses,
+labor double-counting, decimal precision, permissions, finalized-period protection,
+corrections, incomplete costing, multiple lines, reports, and API coverage on PostgreSQL.
+
+Cross-cutting authorization review, backup/restore automation, monitoring, and deployment
+hardening remain separate future deployment work.

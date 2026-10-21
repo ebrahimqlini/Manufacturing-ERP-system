@@ -488,6 +488,57 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
         self.assertEqual(period.materials_total, Decimal("12900.00"))
         self.assertTrue(period.is_complete)
 
+    def test_finalization_recalculates_a_stale_draft_before_freezing(self):
+        self._create_production_run(
+            product=self.product_a,
+            line=self.line_1,
+            planned_qty=Decimal("100"),
+            actual_paper_kg=Decimal("200"),
+            actual_foil_rolls=Decimal("1"),
+            good_qty=Decimal("100"),
+            scrap_qty=Decimal("0"),
+        )
+        for expense_type, amount in (
+            (MonthlyExpense.ExpenseType.LABOR, "0"),
+            (MonthlyExpense.ExpenseType.ELECTRICITY, "100"),
+            (MonthlyExpense.ExpenseType.WATER, "50"),
+        ):
+            MonthlyExpense.objects.create(
+                year=self.year,
+                month=self.month,
+                expense_type=expense_type,
+                scope=MonthlyExpense.AllocationScope.FACTORY,
+                amount=Decimal(amount),
+                description=expense_type,
+                created_by=self.staff_user,
+            )
+
+        period = calculate_monthly_costing(
+            year=self.year, month=self.month, actor=self.staff_user
+        )
+        self.assertTrue(period.is_complete)
+        self.assertEqual(
+            period.product_entries.get(product=self.product_a).actual_material_cost,
+            Decimal("10200.00"),
+        )
+
+        # This output and its material issue arrive after the draft calculation.
+        # Finalization must include them instead of freezing the stale figures.
+        self._create_production_run(
+            product=self.product_a,
+            line=self.line_1,
+            planned_qty=Decimal("50"),
+            actual_paper_kg=Decimal("100"),
+            actual_foil_rolls=Decimal("1"),
+            good_qty=Decimal("50"),
+            scrap_qty=Decimal("0"),
+        )
+        period = finalize_costing_period(period=period, actor=self.staff_user)
+        entry = period.product_entries.get(product=self.product_a)
+        self.assertEqual(period.status, CostingPeriod.Status.FINALIZED)
+        self.assertEqual(entry.actual_material_cost, Decimal("15400.00"))
+        self.assertEqual(entry.good_units_produced, Decimal("150"))
+
     def test_missing_material_price_flags_incomplete_status(self):
         # Create an order with raw_paper and raw_foil
         self._create_production_run(
@@ -1062,6 +1113,8 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
         self.assertEqual(entry.allocated_water_cost, Decimal("120.50"))
         self.assertEqual(period.electricity_total, Decimal("300.00"))
         self.assertEqual(period.water_total, Decimal("120.50"))
+        self.assertTrue(period.electricity_recorded)
+        self.assertTrue(period.water_recorded)
         # Total product cost includes electricity and water explicitly.
         self.assertEqual(
             entry.total_production_cost,
@@ -1148,6 +1201,8 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
         self.assertFalse(period.is_complete)
+        self.assertFalse(period.electricity_recorded)
+        self.assertFalse(period.water_recorded)
         self.assertIn("الكهرباء", period.missing_data_notes)
         self.assertIn("المياه", period.missing_data_notes)
         with self.assertRaises(ValidationError):

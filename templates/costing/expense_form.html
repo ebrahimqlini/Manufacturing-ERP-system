@@ -8,6 +8,7 @@
       <div class="card-body">
         <form method="post">
           {% csrf_token %}
+          {{ form.submission_key }}
           {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
           <div class="row g-3">
             <div class="col-md-6">
@@ -30,6 +31,22 @@
               {{ form.amount }}
               <div class="form-text small">سجّل 0.00 فقط عند تأكيد عدم وجود مصروف فعلي؛ المعدل يُدخل بالقيمة الفعلية للفاتورة.</div>
               {% if form.amount.errors %}<div class="text-danger small">{{ form.amount.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.expense_date.label }}</label>
+              {{ form.expense_date }}
+              <div class="form-text small">إن تُرك فارغًا يُسجل أول يوم من الشهر المختار.</div>
+              {% if form.expense_date.errors %}<div class="text-danger small">{{ form.expense_date.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.payment_date.label }}</label>
+              {{ form.payment_date }}
+              {% if form.payment_date.errors %}<div class="text-danger small">{{ form.payment_date.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">{{ form.reference.label }}</label>
+              {{ form.reference }}
+              {% if form.reference.errors %}<div class="text-danger small">{{ form.reference.errors }}</div>{% endif %}
             </div>
             <div class="col-12">
               <label class="form-label">{{ form.description.label }}</label>

@@ -1,0 +1,16 @@
+{% url 'reports:overview' as overview_url %}
+{% url 'reports:sales' as sales_url %}
+{% url 'reports:purchases' as purchases_url %}
+{% url 'reports:inventory' as inventory_url %}
+{% url 'reports:production' as production_url %}
+{% url 'reports:costing' as costing_url %}
+{% url 'reports:profit' as profit_url %}
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item"><a class="nav-link {% if active_report == 'overview' %}active{% endif %}" href="{{ overview_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">نظرة عامة</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'sales' %}active{% endif %}" href="{{ sales_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">المبيعات</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'purchases' %}active{% endif %}" href="{{ purchases_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">المشتريات</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'inventory' %}active{% endif %}" href="{{ inventory_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">المخزون</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'production' %}active{% endif %}" href="{{ production_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}{% if selected_line %}&line={{ selected_line|urlencode }}{% endif %}">الإنتاج</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'costing' %}active{% endif %}" href="{{ costing_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">التكاليف</a></li>
+  <li class="nav-item"><a class="nav-link {% if active_report == 'profit' %}active{% endif %}" href="{{ profit_url }}?start_date={{ start_date|date:'Y-m-d' }}&end_date={{ end_date|date:'Y-m-d' }}&granularity={{ granularity }}">الأرباح والخسائر</a></li>
+</ul>

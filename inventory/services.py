@@ -16,6 +16,8 @@ def to_base_quantity(product, quantity, unit):
     quantity = Decimal(quantity)
     if not quantity.is_finite() or quantity <= 0:
         raise ValidationError({"quantity": "الكمية يجب أن تكون أكبر من صفر."})
+    if unit is None or not unit.pk or not unit.active:
+        raise ValidationError({"unit": "اختر وحدة قياس نشطة."})
     with localcontext() as context:
         context.prec = 80
         try:
@@ -137,6 +139,35 @@ def post_movement(*, reference, movement_type, product, quantity, unit, actor,
     return movement
 
 
+def _ensure_finalized_period_open_for_movement(movement):
+    """Block reversals that would silently rewrite a finalized financial month."""
+    if movement.source_reference_type == "sales.shipment":
+        from costing.models import ensure_profit_period_open
+        from sales.models import Shipment
+
+        shipment = (
+            Shipment.objects.filter(reference=movement.external_reference)
+            .only("shipment_date")
+            .first()
+        )
+        if shipment is not None:
+            ensure_profit_period_open(
+                shipment.shipment_date.year,
+                shipment.shipment_date.month,
+                "عكس شحنة مبيعات",
+            )
+        return
+    if movement.source_reference_type == "manufacturing.material_issue":
+        from costing.models import ensure_period_open
+
+        posting_date = timezone.localdate(movement.occurred_at)
+        ensure_period_open(
+            posting_date.year,
+            posting_date.month,
+            "عكس صرف مواد لأمر إنتاج",
+        )
+
+
 def reverse_movement(*, movement, reference, actor, reason):
     if not actor or not actor.is_authenticated or not actor.is_staff:
         raise ValidationError("عكس الحركات متاح للمستخدمين المصرح لهم فقط.")
@@ -144,6 +175,7 @@ def reverse_movement(*, movement, reference, actor, reason):
         raise ValidationError({"reason": "سبب العكس مطلوب."})
     if movement.movement_type == StockMovement.Type.REVERSAL or movement.reversal_of_id:
         raise ValidationError("لا يمكن عكس حركة عكس؛ حركات العكس نهائية للحفاظ على سجل التدقيق.")
+    _ensure_finalized_period_open_for_movement(movement)
     original_entries = list(movement.ledger_entries.select_related("location", "location__warehouse"))
     with transaction.atomic():
         _lock_item_locations(movement.product, [entry.location for entry in original_entries])

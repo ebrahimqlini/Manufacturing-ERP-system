@@ -8,8 +8,10 @@ from django.core.exceptions import ValidationError
 from django.db import close_old_connections, connection
 from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
 from django.urls import reverse
+from django.utils import timezone
 
 from catalog.models import Product, ProductCategory, ProductUnitConversion, UnitOfMeasure
+from costing.models import CostingPeriod
 from inventory.models import StockLedgerEntry, StockMovement, StorageLocation, Warehouse
 from inventory.services import balance_for, post_movement, reverse_movement
 
@@ -239,6 +241,54 @@ class ManufacturingWorkflowTests(ManufacturingFixtureMixin, TestCase):
         self.assertEqual(StockMovement.objects.count(), before_movements)
         self.assertEqual(MaterialIssue.objects.count(), 0)
         self.assertEqual(balance_for(self.material, self.location), Decimal("100.000000000000"))
+
+    def test_finalized_costing_month_blocks_issue_result_and_issue_reversal(self):
+        order = self.create_order()
+        release_order(order=order, actor=self.staff)
+        requirement = order.requirements.get()
+        self.receive_material_stock("100")
+        issue = issue_material(
+            order=order,
+            requirement=requirement,
+            quantity=Decimal("12"),
+            unit=self.kg,
+            reference="BEFORE-COST-CLOSE",
+            actor=self.staff,
+        )
+        today = timezone.localdate()
+        CostingPeriod.objects.create(
+            year=today.year,
+            month=today.month,
+            status=CostingPeriod.Status.FINALIZED,
+        )
+        before_movements = StockMovement.objects.count()
+        with self.assertRaisesMessage(ValidationError, "اعتماد فترة التكاليف"):
+            issue_material(
+                order=order,
+                requirement=requirement,
+                quantity=Decimal("1"),
+                unit=self.kg,
+                reference="AFTER-COST-CLOSE",
+                actor=self.staff,
+            )
+        with self.assertRaisesMessage(ValidationError, "اعتماد فترة التكاليف"):
+            record_production_result(
+                order=order,
+                good_quantity=Decimal("1"),
+                scrap_quantity=Decimal("0"),
+                unit=self.pcs,
+                notes="",
+                actor=self.staff,
+            )
+        with self.assertRaisesMessage(ValidationError, "اعتماد فترة التكاليف"):
+            reverse_movement(
+                movement=issue.movement,
+                reference="REVERSE-AFTER-COST-CLOSE",
+                actor=self.staff,
+                reason="محاولة بعد الاعتماد",
+            )
+        self.assertEqual(StockMovement.objects.count(), before_movements)
+        self.assertEqual(MaterialIssue.objects.filter(order=order).count(), 1)
 
     def test_uom_conversions_are_applied_to_order_and_bom(self):
         box = UnitOfMeasure.objects.create(code=f"B{uuid.uuid4().hex[:8].upper()}", name_ar="علبة", dimension="count")

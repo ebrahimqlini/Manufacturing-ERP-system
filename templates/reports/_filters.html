@@ -1,0 +1,31 @@
+<form method="get" class="row g-2 align-items-end mb-4">
+  <div class="col-md-3">
+    <label class="form-label" for="report-start">من تاريخ</label>
+    <input class="form-control" id="report-start" type="date" name="start_date" value="{{ start_date|date:'Y-m-d' }}" required>
+  </div>
+  <div class="col-md-3">
+    <label class="form-label" for="report-end">إلى تاريخ</label>
+    <input class="form-control" id="report-end" type="date" name="end_date" value="{{ end_date|date:'Y-m-d' }}" required>
+  </div>
+  <div class="col-md-2">
+    <label class="form-label" for="report-granularity">التجميع</label>
+    <select class="form-select" id="report-granularity" name="granularity">
+      <option value="day" {% if granularity == 'day' %}selected{% endif %}>يومي</option>
+      <option value="month" {% if granularity == 'month' %}selected{% endif %}>شهري</option>
+    </select>
+  </div>
+  {% if production_lines %}
+  <div class="col-md-2">
+    <label class="form-label" for="report-line">خط الإنتاج</label>
+    <select class="form-select" id="report-line" name="line">
+      <option value="">كل الخطوط</option>
+      {% for line in production_lines %}
+      <option value="{{ line.code }}" {% if selected_line == line.code %}selected{% endif %}>{{ line.code }} — {{ line.name_ar }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">تحديث التقرير</button></div>
+  <div class="col-md-2"><a class="btn btn-outline-secondary w-100" href="{{ request.path }}">إعادة ضبط</a></div>
+</form>
+<p class="text-muted small mb-3">الفترة: <span class="ltr">{{ start_date|date:"Y-m-d" }} → {{ end_date|date:"Y-m-d" }}</span> ({{ period_days }} يومًا) — جميع القيم المالية بالجنيه المصري بحد أقصى منزلتين، والكميات بوحدات المخزون الأساسية.</p>

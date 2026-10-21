@@ -1,10 +1,12 @@
 from datetime import date
 from decimal import Decimal
 from functools import wraps
+import uuid
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.db.models import Sum
 from django.http import HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
@@ -12,8 +14,10 @@ from django.views.decorators.http import require_POST
 
 from .forms import (
     CostingPeriodPolicyForm,
+    ExpenseReverseForm,
     MonthlyExpenseForm,
     ProductSellingPriceForm,
+    ProfitPeriodReopenForm,
     RawMaterialPriceForm,
     ReopenPeriodForm,
     RollYieldStandardForm,
@@ -21,11 +25,18 @@ from .forms import (
 from .models import (
     CostingPeriod,
     MonthlyExpense,
+    MonthlyProfitPeriod,
     ProductCostingEntry,
     ProductSellingPrice,
     ProductionOrderCostingEntry,
     RawMaterialPrice,
     RollYieldStandard,
+)
+from .profit_services import (
+    calculate_monthly_profit,
+    finalize_monthly_profit,
+    reopen_monthly_profit,
+    reverse_monthly_expense,
 )
 from .services import (
     calculate_monthly_costing,
@@ -81,9 +92,11 @@ def period_list(request):
     # all, so a missing utility is visible before opening each period report.
     for period in periods:
         recorded_types = set(
-            MonthlyExpense.objects.filter(year=period.year, month=period.month).values_list(
-                "expense_type", flat=True
-            )
+            MonthlyExpense.objects.filter(
+                year=period.year,
+                month=period.month,
+                status=MonthlyExpense.Status.ACTIVE,
+            ).values_list("expense_type", flat=True)
         )
         period.missing_utility_labels = [
             label
@@ -421,10 +434,13 @@ def product_breakdown(request, pk):
 
 @costing_financials_required
 def expense_list(request):
-    expenses = MonthlyExpense.objects.select_related("production_line", "product").order_by("-year", "-month", "expense_type")
+    expenses = MonthlyExpense.objects.select_related(
+        "production_line", "product", "created_by", "reversed_by"
+    ).order_by("-year", "-month", "expense_type")
     year_filter = request.GET.get("year", "")
     month_filter = request.GET.get("month", "")
     type_filter = request.GET.get("type", "")
+    status_filter = request.GET.get("status", "")
 
     if year_filter.isdigit():
         expenses = expenses.filter(year=int(year_filter))
@@ -432,22 +448,34 @@ def expense_list(request):
         expenses = expenses.filter(month=int(month_filter))
     if type_filter in MonthlyExpense.ExpenseType.values:
         expenses = expenses.filter(expense_type=type_filter)
+    if status_filter in MonthlyExpense.Status.values:
+        expenses = expenses.filter(status=status_filter)
 
+    active_expenses = expenses.filter(status=MonthlyExpense.Status.ACTIVE)
     totals = {
-        "labor": expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).aggregate(s=Sum("amount"))["s"] or 0,
-        "electricity": expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).aggregate(s=Sum("amount"))["s"] or 0,
-        "water": expenses.filter(expense_type=MonthlyExpense.ExpenseType.WATER).aggregate(s=Sum("amount"))["s"] or 0,
-        "other": expenses.filter(expense_type=MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL).aggregate(s=Sum("amount"))["s"] or 0,
+        "labor": active_expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).aggregate(s=Sum("amount"))["s"] or 0,
+        "electricity": active_expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).aggregate(s=Sum("amount"))["s"] or 0,
+        "maintenance": active_expenses.filter(expense_type=MonthlyExpense.ExpenseType.MAINTENANCE).aggregate(s=Sum("amount"))["s"] or 0,
+        "water": active_expenses.filter(expense_type=MonthlyExpense.ExpenseType.WATER).aggregate(s=Sum("amount"))["s"] or 0,
+        "other": active_expenses.filter(expense_type=MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL).aggregate(s=Sum("amount"))["s"] or 0,
     }
-    totals["grand"] = totals["labor"] + totals["electricity"] + totals["water"] + totals["other"]
+    totals["operating"] = (
+        totals["labor"]
+        + totals["electricity"]
+        + totals["maintenance"]
+        + totals["other"]
+    )
+    totals["grand"] = totals["operating"] + totals["water"]
 
     # Warn about periods whose required electricity/water bill is not recorded yet.
     utility_gaps = []
     for period in CostingPeriod.objects.all().order_by("-year", "-month"):
         recorded = set(
-            MonthlyExpense.objects.filter(year=period.year, month=period.month).values_list(
-                "expense_type", flat=True
-            )
+            MonthlyExpense.objects.filter(
+                year=period.year,
+                month=period.month,
+                status=MonthlyExpense.Status.ACTIVE,
+            ).values_list("expense_type", flat=True)
         )
         missing = [
             label
@@ -467,9 +495,11 @@ def expense_list(request):
             "expenses": expenses[:150],
             "totals": totals,
             "types": MonthlyExpense.ExpenseType.choices,
+            "statuses": MonthlyExpense.Status.choices,
             "selected_year": year_filter,
             "selected_month": month_filter,
             "selected_type": type_filter,
+            "selected_status": status_filter,
             "utility_gaps": utility_gaps,
         },
     )
@@ -477,13 +507,45 @@ def expense_list(request):
 
 @staff_required
 def expense_create(request):
+    if request.method == "POST":
+        submitted_key = request.POST.get("submission_key")
+        try:
+            submitted_key = uuid.UUID(submitted_key) if submitted_key else None
+        except (TypeError, ValueError):
+            submitted_key = None
+        if submitted_key and MonthlyExpense.objects.filter(
+            submission_key=submitted_key
+        ).exists():
+            messages.info(
+                request,
+                "تم تسجيل هذه الاستمارة مسبقًا؛ لم يُضف المصروف مرة ثانية.",
+            )
+            return redirect("costing:expense_list")
+
     form = MonthlyExpenseForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
+        submission_key = form.cleaned_data.get("submission_key")
+        if submission_key and MonthlyExpense.objects.filter(
+            submission_key=submission_key
+        ).exists():
+            messages.info(
+                request,
+                "تم تسجيل هذه الاستمارة مسبقًا؛ لم يُضف المصروف مرة ثانية.",
+            )
+            return redirect("costing:expense_list")
         expense = form.save(commit=False)
+        expense.submission_key = submission_key or uuid.uuid4()
         expense.created_by = request.user
+        expense.updated_by = request.user
         try:
             expense.save()
             messages.success(request, "تم تسجيل المصروف الشهري بنجاح.")
+            return redirect("costing:expense_list")
+        except IntegrityError:
+            messages.info(
+                request,
+                "تم تسجيل هذه الاستمارة مسبقًا؛ لم يُضف المصروف مرة ثانية.",
+            )
             return redirect("costing:expense_list")
         except ValidationError as exc:
             for msg in exc.messages:
@@ -500,14 +562,27 @@ def expense_create(request):
 def expense_edit(request, pk):
     expense = get_object_or_404(MonthlyExpense, pk=pk)
     period = CostingPeriod.objects.filter(year=expense.year, month=expense.month, status=CostingPeriod.Status.FINALIZED).first()
-    if period:
-        messages.error(request, "لا يمكن تعديل مصروف لفترة معتمدة نهائيًا؛ أعد فتح الفترة أولاً.")
+    profit = MonthlyProfitPeriod.objects.filter(
+        year=expense.year,
+        month=expense.month,
+        status=MonthlyProfitPeriod.Status.FINALIZED,
+    ).first()
+    if period or profit:
+        messages.error(
+            request,
+            "لا يمكن تعديل مصروف لفترة تكاليف أو أرباح معتمدة نهائيًا؛ أعد فتح الفترة أولاً.",
+        )
+        return redirect("costing:expense_list")
+    if expense.status == MonthlyExpense.Status.REVERSED:
+        messages.error(request, "لا يمكن تعديل مصروف معكوس؛ سجّل مصروفًا جديدًا عند الحاجة.")
         return redirect("costing:expense_list")
 
     form = MonthlyExpenseForm(request.POST or None, instance=expense)
     if request.method == "POST" and form.is_valid():
         try:
-            form.save()
+            updated = form.save(commit=False)
+            updated.updated_by = request.user
+            updated.save()
             messages.success(request, "تم تحديث المصروف.")
             return redirect("costing:expense_list")
         except ValidationError as exc:
@@ -518,6 +593,161 @@ def expense_edit(request, pk):
         request,
         "costing/expense_form.html",
         {"form": form, "title": f"تعديل مصروف — {expense.description}"},
+    )
+
+
+@staff_required
+def expense_reverse(request, pk):
+    expense = get_object_or_404(
+        MonthlyExpense.objects.select_related("production_line", "product"), pk=pk
+    )
+    if expense.status == MonthlyExpense.Status.REVERSED:
+        messages.info(request, "هذا المصروف معكوس بالفعل.")
+        return redirect("costing:expense_list")
+    form = ExpenseReverseForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            reverse_monthly_expense(
+                expense=expense,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+            )
+            messages.success(request, "تم عكس المصروف مع الاحتفاظ بسجل التدقيق.")
+            return redirect("costing:expense_list")
+        except ValidationError as exc:
+            messages.error(request, " — ".join(exc.messages))
+    return render(
+        request,
+        "costing/expense_reverse.html",
+        {
+            "form": form,
+            "expense": expense,
+            "title": f"عكس مصروف — {expense.description}",
+        },
+    )
+
+
+# --- Monthly Profit, Operating Expenses, and Loss Carry-Forward ---
+
+@costing_financials_required
+def profit_period_list(request):
+    periods = MonthlyProfitPeriod.objects.select_related(
+        "costing_period", "calculated_by", "finalized_by", "reopened_by"
+    ).order_by("-year", "-month")
+    status_filter = request.GET.get("status", "")
+    if status_filter in MonthlyProfitPeriod.Status.values:
+        periods = periods.filter(status=status_filter)
+    return render(
+        request,
+        "costing/profit_period_list.html",
+        {
+            "periods": periods,
+            "statuses": MonthlyProfitPeriod.Status.choices,
+            "selected_status": status_filter,
+            "current_year": date.today().year,
+            "current_month": date.today().month,
+        },
+    )
+
+
+@staff_required
+@require_POST
+def profit_period_calculate(request):
+    try:
+        year = int(request.POST.get("year", date.today().year))
+        month = int(request.POST.get("month", date.today().month))
+        if not 2020 <= year <= 2100 or not 1 <= month <= 12:
+            raise ValueError("السنة أو الشهر غير صالح.")
+    except ValueError:
+        messages.error(request, "يرجى إدخال سنة وشهر صالحين.")
+        return redirect("costing:profit_period_list")
+
+    try:
+        period = calculate_monthly_profit(year=year, month=month, actor=request.user)
+        messages.success(
+            request,
+            f"تم احتساب نتيجة شهر {year}/{month:02d} مع رصيد الخسائر المتراكمة.",
+        )
+        return redirect("costing:profit_period_detail", pk=period.pk)
+    except ValidationError as exc:
+        messages.error(request, " — ".join(exc.messages))
+        return redirect("costing:profit_period_list")
+
+
+@costing_financials_required
+def profit_period_detail(request, pk):
+    period = get_object_or_404(
+        MonthlyProfitPeriod.objects.select_related(
+            "costing_period", "calculated_by", "finalized_by", "reopened_by"
+        ),
+        pk=pk,
+    )
+    cogs_lines = period.cogs_lines.select_related(
+        "product", "source_period", "source_costing_entry"
+    ).order_by("product__sku")
+    expenses = MonthlyExpense.objects.filter(year=period.year, month=period.month).select_related(
+        "production_line", "product", "created_by", "reversed_by"
+    ).order_by("expense_type", "expense_date", "pk")
+    missing_notes = [
+        note for note in (period.missing_data_notes or "").split("\n") if note.strip()
+    ]
+    return render(
+        request,
+        "costing/profit_period_detail.html",
+        {
+            "period": period,
+            "cogs_lines": cogs_lines,
+            "expenses": expenses,
+            "missing_notes": missing_notes,
+            "reopen_form": ProfitPeriodReopenForm(),
+        },
+    )
+
+
+@staff_required
+@require_POST
+def profit_period_finalize(request, pk):
+    period = get_object_or_404(MonthlyProfitPeriod, pk=pk)
+    try:
+        finalize_monthly_profit(period=period, actor=request.user)
+        messages.success(
+            request,
+            f"تم اعتماد نتيجة شهر {period.year}/{period.month:02d} نهائيًا مع تثبيت رصيد الخسائر.",
+        )
+    except ValidationError as exc:
+        messages.error(request, " — ".join(exc.messages))
+    return redirect("costing:profit_period_detail", pk=period.pk)
+
+
+@staff_required
+def profit_period_reopen(request, pk):
+    period = get_object_or_404(MonthlyProfitPeriod, pk=pk)
+    if period.status != MonthlyProfitPeriod.Status.FINALIZED:
+        messages.info(request, "هذه الفترة غير معتمدة نهائيًا.")
+        return redirect("costing:profit_period_detail", pk=period.pk)
+    form = ProfitPeriodReopenForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            reopen_monthly_profit(
+                period=period,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+            )
+            messages.success(
+                request,
+                "تمت إعادة فتح نتيجة الشهر مع توثيق السبب. أعد الاحتساب بعد التصحيح.",
+            )
+            return redirect("costing:profit_period_detail", pk=period.pk)
+        except ValidationError as exc:
+            messages.error(request, " — ".join(exc.messages))
+    return render(
+        request,
+        "costing/profit_period_reopen.html",
+        {
+            "form": form,
+            "period": period,
+            "title": f"إعادة فتح نتيجة الشهر — {period.year}/{period.month:02d}",
+        },
     )
 
 

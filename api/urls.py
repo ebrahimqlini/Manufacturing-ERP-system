@@ -11,12 +11,19 @@ from .views import (
     CustomerProductDetailView,
     CustomerProductListView,
     CustomerProfileView,
+    OwnerCostingPeriodListView,
     OwnerCostingView,
     OwnerDashboardView,
     OwnerInventoryView,
+    OwnerProductionOrderListView,
     OwnerProductionView,
+    OwnerProfitView,
+    OwnerPurchaseOrderListView,
     OwnerPurchasesView,
+    OwnerSalesOrderListView,
     OwnerSalesView,
+    OwnerStockListView,
+    OwnerStockMovementListView,
     TokenLogoutView,
     TokenObtainView,
 )
@@ -44,6 +51,37 @@ urlpatterns = [
     path("owner/inventory/", OwnerInventoryView.as_view(), name="owner-inventory"),
     path("owner/production/", OwnerProductionView.as_view(), name="owner-production"),
     path("owner/costing/", OwnerCostingView.as_view(), name="owner-costing"),
+    path("owner/profit/", OwnerProfitView.as_view(), name="owner-profit"),
+    path(
+        "owner/sales/orders/",
+        OwnerSalesOrderListView.as_view(),
+        name="owner-sales-orders",
+    ),
+    path(
+        "owner/purchases/orders/",
+        OwnerPurchaseOrderListView.as_view(),
+        name="owner-purchase-orders",
+    ),
+    path(
+        "owner/inventory/stock/",
+        OwnerStockListView.as_view(),
+        name="owner-stock",
+    ),
+    path(
+        "owner/inventory/movements/",
+        OwnerStockMovementListView.as_view(),
+        name="owner-stock-movements",
+    ),
+    path(
+        "owner/production/orders/",
+        OwnerProductionOrderListView.as_view(),
+        name="owner-production-orders",
+    ),
+    path(
+        "owner/costing/periods/",
+        OwnerCostingPeriodListView.as_view(),
+        name="owner-costing-periods",
+    ),
     path(
         "schema/",
         SpectacularAPIView.as_view(

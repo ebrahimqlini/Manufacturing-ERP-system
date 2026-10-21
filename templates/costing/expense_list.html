@@ -4,10 +4,11 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
     <h1 class="h3 mb-0">سجل المصاريف الشهرية</h1>
-    <span class="text-muted small">تسجيل مصاريف العمالة والكهرباء والمياه والمصاريف الصناعية الأخرى لكل شهر وتحديد نطاق التخصيص</span>
+    <span class="text-muted small">تسجيل مصاريف العمالة والكهرباء والصيانة والمصاريف التشغيلية الأخرى مع تاريخ المصروف والسداد والمرجع وسجل العكس</span>
   </div>
   <div class="d-flex gap-2">
     <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+    <a class="btn btn-outline-success" href="{% url 'costing:profit_period_list' %}">الأرباح والخسائر</a>
     {% if user.is_staff %}
       <a class="btn btn-primary" href="{% url 'costing:expense_create' %}">إضافة مصروف شهري</a>
     {% endif %}
@@ -31,6 +32,7 @@
 
 <div class="alert alert-secondary shadow-sm small">
   <strong>ملاحظة تخصيص الفواتير:</strong> يُحمَّل المصروف بالكامل على الشهر المختار في النموذج. لا يفترض النظام أن فاتورة الكهرباء/المياه تغطي نفس شهر الاستهلاك الفعلي؛ أي اختلاف بين فترة الفاتورة وفترة الاستهلاك يُوثَّق في البيان أو الملاحظات.
+  <span class="d-block mt-2"><strong>حساب الأرباح الشهري:</strong> العمالة والكهرباء والصيانة والمصاريف التشغيلية الأخرى تُخصم مرة واحدة كتعبئة الفترة. المصاريف المعكوسة لا تدخل في الإجماليات. المياه مسجلة ضمن التكاليف لكنها مستبعدة من حساب الربح التشغيلي المتفق عليه.</span>
 </div>
 
 <div class="card card-body mb-3 bg-light shadow-sm">
@@ -43,7 +45,7 @@
       <label class="form-label small">الشهر</label>
       <input type="number" name="month" class="form-control form-control-sm" value="{{ selected_month }}" min="1" max="12" placeholder="الكل">
     </div>
-    <div class="col-md-4 col-8">
+    <div class="col-md-3 col-8">
       <label class="form-label small">نوع المصروف</label>
       <select name="type" class="form-select form-select-sm">
         <option value="">جميع الأنواع</option>
@@ -53,6 +55,15 @@
       </select>
     </div>
     <div class="col-md-2 col-4">
+      <label class="form-label small">الحالة</label>
+      <select name="status" class="form-select form-select-sm">
+        <option value="">الكل</option>
+        {% for val, label in statuses %}
+          <option value="{{ val }}" {% if selected_status == val %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-1 col-4">
       <button type="submit" class="btn btn-sm btn-outline-dark w-100">تصفية</button>
     </div>
   </form>
@@ -73,19 +84,25 @@
   </div>
   <div class="col-6 col-md">
     <div class="card card-body text-center p-2 shadow-sm">
-      <span class="text-muted small">مياه</span>
-      <strong class="text-primary">{{ totals.water|floatformat:2 }} ج.م</strong>
+      <span class="text-muted small">صيانة</span>
+      <strong class="text-primary">{{ totals.maintenance|floatformat:2 }} ج.م</strong>
     </div>
   </div>
   <div class="col-6 col-md">
     <div class="card card-body text-center p-2 shadow-sm">
-      <span class="text-muted small">صناعية أخرى</span>
+      <span class="text-muted small">تشغيلية أخرى</span>
       <strong class="text-primary">{{ totals.other|floatformat:2 }} ج.م</strong>
+    </div>
+  </div>
+  <div class="col-6 col-md">
+    <div class="card card-body text-center p-2 shadow-sm">
+      <span class="text-muted small">مياه (مستبعدة من الربح)</span>
+      <strong class="text-secondary">{{ totals.water|floatformat:2 }} ج.م</strong>
     </div>
   </div>
   <div class="col-12 col-md">
     <div class="card card-body text-center p-2 shadow-sm bg-white">
-      <span class="text-muted small">إجمالي المصاريف المعروضة</span>
+      <span class="text-muted small">إجمالي المصاريف النشطة</span>
       <strong class="text-success">{{ totals.grand|floatformat:2 }} ج.م</strong>
     </div>
   </div>
@@ -98,10 +115,12 @@
         <tr>
           <th>الفترة</th>
           <th>نوع المصروف</th>
-          <th>البيان</th>
+          <th>البيان / المرجع</th>
+          <th>تاريخ المصروف / السداد</th>
           <th>النطاق</th>
           <th>التخصيص</th>
           <th>المبلغ (ج.م)</th>
+          <th>الحالة</th>
           <th>إجراء</th>
         </tr>
       </thead>
@@ -110,7 +129,14 @@
         <tr>
           <td><strong>{{ exp.year }}/{{ exp.month|stringformat:"02d" }}</strong></td>
           <td><span class="badge bg-secondary">{{ exp.get_expense_type_display }}</span></td>
-          <td>{{ exp.description }}</td>
+          <td>
+            {{ exp.description }}
+            {% if exp.reference %}<div class="small text-muted ltr">مرجع: {{ exp.reference }}</div>{% endif %}
+          </td>
+          <td class="small ltr">
+            {{ exp.expense_date|date:"Y-m-d"|default:"—" }}
+            {% if exp.payment_date %}<br>سداد: {{ exp.payment_date|date:"Y-m-d" }}{% endif %}
+          </td>
           <td><span class="small text-muted">{{ exp.get_scope_display }}</span></td>
           <td>
             {% if exp.scope == 'LINE' %}
@@ -126,13 +152,24 @@
             {% if exp.amount == 0 %}<br><span class="badge bg-warning text-dark">مُسجّل بصفر (مؤكد)</span>{% endif %}
           </td>
           <td>
+            {% if exp.status == 'ACTIVE' %}
+              <span class="badge bg-success">ساري</span>
+            {% else %}
+              <span class="badge bg-dark">معكوس</span>
+              {% if exp.reversal_reason %}<div class="small text-muted">{{ exp.reversal_reason }}</div>{% endif %}
+            {% endif %}
+          </td>
+          <td>
             {% if user.is_staff %}
-              <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:expense_edit' exp.pk %}">تعديل</a>
+              {% if exp.status == 'ACTIVE' %}
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'costing:expense_edit' exp.pk %}">تعديل</a>
+                <a class="btn btn-sm btn-outline-danger" href="{% url 'costing:expense_reverse' exp.pk %}">عكس</a>
+              {% endif %}
             {% endif %}
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="7" class="text-center py-4 text-muted">لا توجد مصاريف مسجلة مطابقة.</td></tr>
+        <tr><td colspan="9" class="text-center py-4 text-muted">لا توجد مصاريف مسجلة مطابقة.</td></tr>
         {% endfor %}
       </tbody>
     </table>

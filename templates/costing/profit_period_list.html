@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}الأرباح والخسائر الشهرية{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">الأرباح والخسائر الشهرية</h1>
+    <p class="text-muted small mb-0">
+      نتيجة تشغيلية إدارية شهرية بعد المصاريف التشغيلية، ثم تغطية الخسائر المتراكمة. ليست إقفالًا محاسبيًا ولا صافي ربح نهائيًا.
+    </p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:expense_list' %}">المصاريف الشهرية</a>
+    <a class="btn btn-outline-primary" href="{% url 'costing:period_list' %}">فترات التكاليف</a>
+    <a class="btn btn-outline-info text-dark" href="{% url 'reports:profit' %}">تقرير الأرباح</a>
+  </div>
+</div>
+
+<div class="alert alert-warning small shadow-sm">
+  <strong>قاعدة الحساب:</strong>
+  إجمالي الربح = صافي إيراد المبيعات − تكلفة البضاعة المباعة (مواد مباشرة للكميات المشحونة فقط).
+  نتيجة الشهر = إجمالي الربح − العمالة − الكهرباء − الصيانة − المصاريف التشغيلية الأخرى.
+  المصاريف لا تُوزع مرة أخرى على الخطوط، والعمالة لا تُخصم مرتين. المياه مستبعدة من حساب الربح المتفق عليه.
+</div>
+
+{% if user.is_staff %}
+<div class="card card-body mb-4 shadow-sm">
+  <h2 class="h5 mb-3">احتساب أو تحديث نتيجة شهر</h2>
+  <form method="post" action="{% url 'costing:profit_period_calculate' %}" class="row g-3 align-items-end">
+    {% csrf_token %}
+    <div class="col-md-4">
+      <label class="form-label">السنة</label>
+      <input type="number" name="year" class="form-control" value="{{ current_year }}" min="2020" max="2100" required>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">الشهر</label>
+      <select name="month" class="form-select" required>
+        {% for number in "123456789012"|make_list %}
+          <option value="{{ forloop.counter }}" {% if current_month == forloop.counter %}selected{% endif %}>{{ forloop.counter }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4">
+      <button type="submit" class="btn btn-success w-100">احتساب النتيجة</button>
+    </div>
+  </form>
+  <p class="small text-muted mb-0 mt-2">
+    يجب تسجيل العمالة والكهرباء والصيانة والمصاريف الأخرى، حتى لو بقيمة 0.00، قبل اعتماد الشهر.
+    تكلفة البضاعة المباعة تحتاج تكلفة مواد محفوظة ومعتمدة للمنتجات المشحونة.
+  </p>
+</div>
+{% endif %}
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>الفترة</th>
+          <th>الحالة</th>
+          <th>صافي المبيعات</th>
+          <th>تكلفة البضاعة المباعة</th>
+          <th>إجمالي الربح</th>
+          <th>المصاريف التشغيلية</th>
+          <th>نتيجة الشهر</th>
+          <th>خسائر افتتاحية</th>
+          <th>مسترد من خسائر سابقة</th>
+          <th>خسائر ختامية</th>
+          <th>الربح المتبقي بعد التغطية</th>
+          <th>البيانات</th>
+          <th>تفاصيل</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for period in periods %}
+        <tr>
+          <td class="ltr"><strong>{{ period.year }}/{{ period.month|stringformat:"02d" }}</strong></td>
+          <td>
+            {% if period.status == 'FINALIZED' %}
+              <span class="badge bg-success">معتمد</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">مسودة</span>
+            {% endif %}
+          </td>
+          <td class="ltr">{{ period.revenue|floatformat:2 }}</td>
+          <td class="ltr">{{ period.cogs|floatformat:2 }}</td>
+          <td class="ltr">{{ period.gross_profit|floatformat:2 }}</td>
+          <td class="ltr">{{ period.operating_expenses_total|floatformat:2 }}</td>
+          <td class="ltr fw-bold {% if period.monthly_result < 0 %}text-danger{% else %}text-success{% endif %}">{{ period.monthly_result|floatformat:2 }}</td>
+          <td class="ltr">{{ period.opening_accumulated_loss|floatformat:2 }}</td>
+          <td class="ltr">{{ period.loss_recovered|floatformat:2 }}</td>
+          <td class="ltr">{{ period.closing_accumulated_loss|floatformat:2 }}</td>
+          <td class="ltr fw-bold {% if period.profit_after_loss_recovery > 0 %}text-success{% endif %}">{{ period.profit_after_loss_recovery|floatformat:2 }}</td>
+          <td>
+            {% if period.is_complete %}
+              <span class="badge bg-success">مكتملة</span>
+            {% else %}
+              <span class="badge bg-danger">ناقصة</span>
+            {% endif %}
+          </td>
+          <td><a class="btn btn-sm btn-outline-primary" href="{% url 'costing:profit_period_detail' period.pk %}">فتح</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="13" class="text-center py-4 text-muted">لا توجد فترات أرباح محسوبة بعد.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card card-body mt-3 shadow-sm small">
+  <p class="mb-1"><strong>الخسائر المتراكمة:</strong> تُرحّل من آخر شهر معتمد مهما تغيّر العام. لا تُعاد كخسارة جديدة ولا تُسجل كمصروف.</p>
+  <p class="mb-0 text-muted">عند إعادة فتح شهر سابق بعد اعتماد أشهر لاحقة، يجب إعادة فتح اللاحق أولًا؛ حتى لا يتغير رصيد الخسائر المتراكمة بأثر رجعي دون توثيق.</p>
+</div>
+{% endblock %}

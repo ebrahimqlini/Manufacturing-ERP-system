@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}تقرير المشتريات المجمع{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="h3 mb-0">تقرير المشتريات المجمع</h1><p class="text-muted small mb-0">أوامر الشراء والاستلامات، مع فصل قيمة الأمر عن قيمة الاستلام وعن الحركات المعكوسة.</p></div>
+</div>
+{% include "reports/_filters.html" %}
+{% include "reports/_tabs.html" %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي المستندات</span><strong class="fs-4">{{ purchases.orders_total }}</strong><span class="small text-muted">ملغاة: {{ purchases.cancelled_orders_count }}</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">قيمة أوامر غير ملغاة</span><strong class="fs-4">{{ purchases.commercial_order_value }}</strong><span class="small text-muted">لقطة مستند تجاري</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">صافي قيمة الاستلام</span><strong class="fs-4">{{ purchases.net_received_value }}</strong><span class="small text-muted">معكوس: {{ purchases.reversed_receipt_value }}</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">استلامات</span><strong class="fs-4">{{ purchases.receipts_count }}</strong><span class="small text-muted">نشطة: {{ purchases.active_receipts_count }} / معكوسة كليًا: {{ purchases.fully_reversed_receipts_count }}</span></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-6">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">حالات أوامر الشراء</h2>
+      <table class="table table-sm mb-0"><thead><tr><th>الحالة</th><th>العدد</th></tr></thead><tbody>
+        {% for row in purchases.status_count_rows %}<tr><td>{{ row.label }}</td><td class="ltr">{{ row.count }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="small text-muted mb-0 mt-2">العدد يشمل كل المستندات، والقيم النشطة تستبعد الأوامر الملغاة.</p>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">حالة الاستلام (أوامر غير ملغاة)</h2>
+      <p class="mb-1">لم يُستلم: <strong>{{ purchases.receipt_state_counts.NOT_RECEIVED }}</strong></p>
+      <p class="mb-1">مستلم جزئيًا: <strong>{{ purchases.receipt_state_counts.PARTIALLY_RECEIVED }}</strong></p>
+      <p class="mb-0">مستلم بالكامل: <strong>{{ purchases.receipt_state_counts.RECEIVED }}</strong></p>
+      <p class="small text-muted mb-0">الأساس: الكمية الأساسية الصافية النشطة، مع استبعاد الاستلامات المعكوسة.</p>
+    </div>
+  </div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">الكميات بوحدات المخزون الأساسية</h2>
+  <p class="small text-muted">كل وحدة أساسية معروضة منفصلة؛ لا تُجمع أبعاد مختلفة.</p>
+  <div class="table-responsive"><table class="table table-sm">
+    <thead><tr><th>الوحدة</th><th>مطلوب</th><th>مستلم نشط</th><th>معكوس</th><th>متبقٍ</th></tr></thead>
+    <tbody>{% for row in purchases.quantity_summary %}
+      <tr><td>{{ row.base_uom_name_ar }} <span class="text-muted ltr">({{ row.base_uom }})</span></td><td class="ltr">{{ row.ordered_quantity_base }}</td><td class="ltr">{{ row.received_quantity_base }}</td><td class="ltr">{{ row.reversed_quantity_base }}</td><td class="ltr">{{ row.outstanding_quantity_base }}</td></tr>
+    {% empty %}<tr><td colspan="5" class="text-muted">لا توجد كميات في الفترة.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0">{{ purchases.quantity_basis }}</p>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أهم الموردين</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>المورد</th><th>الأوامر</th><th>قيمة الأمر</th><th>قيمة الاستلام</th></tr></thead><tbody>
+        {% for row in purchases.top_suppliers %}<tr><td>{{ row.supplier_code }} — {{ row.supplier_name }}</td><td class="ltr">{{ row.order_count }}</td><td class="ltr">{{ row.ordered_value }}</td><td class="ltr">{{ row.received_value }}</td></tr>
+        {% empty %}<tr><td colspan="4" class="text-muted">لا توجد مشتريات.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أهم الأصناف</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>الصنف</th><th>مطلوب</th><th>مستلم</th></tr></thead><tbody>
+        {% for row in purchases.top_products %}<tr><td>{{ row.sku }} — {{ row.name_ar }}</td><td class="ltr">{{ row.ordered_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.received_quantity_base }} {{ row.base_uom }}</td></tr>
+        {% empty %}<tr><td colspan="3" class="text-muted">لا توجد بيانات.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">أحدث أوامر الشراء</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الأمر</th><th>المورد</th><th>التاريخ</th><th>الحالة</th><th>القيمة</th><th>الاستلام</th></tr></thead>
+    <tbody>{% for row in purchases.recent_orders %}
+      <tr><td><bdi class="ltr">{{ row.order_number }}</bdi></td><td>{{ row.supplier_name }}</td><td class="ltr">{{ row.order_date|date:"Y-m-d" }}</td><td>{{ row.status_display }}</td><td class="ltr">{{ row.ordered_value }}</td><td>{{ row.receipt_state_display }}</td></tr>
+    {% empty %}<tr><td colspan="6" class="text-muted">لا توجد أوامر.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+
+<div class="card card-body shadow-sm">
+  <h2 class="h5">أحدث الاستلامات</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>المرجع</th><th>أمر الشراء</th><th>المورد</th><th>التاريخ</th><th>صافي القيمة</th><th>الحالة</th></tr></thead>
+    <tbody>{% for row in purchases.recent_receipts %}
+      <tr><td><bdi class="ltr">{{ row.reference }}</bdi></td><td class="ltr">{{ row.order_number }}</td><td>{{ row.supplier_name }}</td><td class="ltr">{{ row.received_date|date:"Y-m-d" }}</td><td class="ltr">{{ row.net_value }}</td><td>{% if row.is_fully_reversed %}<span class="badge bg-danger">معكوس كليًا</span>{% elif row.has_reversed_lines %}<span class="badge bg-warning text-dark">معكوس جزئيًا</span>{% else %}<span class="badge bg-success">نشط</span>{% endif %}</td></tr>
+    {% empty %}<tr><td colspan="6" class="text-muted">لا توجد استلامات.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ purchases.value_basis }}</p>
+</div>
+{% endblock %}

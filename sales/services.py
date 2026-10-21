@@ -283,6 +283,14 @@ def create_shipment(*, order, actor, reference, shipment_date, source_location, 
         raise ValidationError("أدخل كمية مشحونة واحدة على الأقل.")
     if source_location is None:
         raise ValidationError({"source_location": "موقع الصرف مطلوب."})
+    effective_date = shipment_date or date.today()
+    # Revenue is recognized at shipment. A finalized monthly result must be
+    # reopened before a late shipment can change its revenue and loss balance.
+    from costing.models import ensure_profit_period_open
+
+    ensure_profit_period_open(
+        effective_date.year, effective_date.month, "تسجيل شحنة مبيعات"
+    )
 
     with transaction.atomic():
         order = SalesOrder.objects.select_for_update().select_related("customer").get(pk=order.pk)
@@ -347,7 +355,7 @@ def create_shipment(*, order, actor, reference, shipment_date, source_location, 
             order=order,
             reference=reference,
             customer_reference=(customer_reference or "").strip(),
-            shipment_date=shipment_date or date.today(),
+            shipment_date=effective_date,
             source_location=source_location,
             notes=(notes or "").strip(),
             actor=actor,

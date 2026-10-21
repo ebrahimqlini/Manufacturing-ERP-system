@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}نتيجة شهر {{ period.year }}/{{ period.month|stringformat:"02d" }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">نتيجة شهر {{ period.year }}/{{ period.month|stringformat:"02d" }}</h1>
+    <p class="text-muted small mb-0">
+      {{ period.start_date|date:"Y-m-d" }} إلى {{ period.end_date|date:"Y-m-d" }}
+      — نتيجة تشغيلية إدارية، وليست صافي ربح محاسبيًا نهائيًا.
+    </p>
+  </div>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:profit_period_list' %}">كل الفترات</a>
+    {% if period.costing_period %}
+      <a class="btn btn-outline-primary" href="{% url 'costing:period_detail' period.costing_period.pk %}">فترة التكاليف</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="alert {% if period.status == 'FINALIZED' %}alert-success{% else %}alert-warning{% endif %} shadow-sm small">
+  <strong>الحالة:</strong> {{ period.get_status_display }}.
+  {% if period.status == 'FINALIZED' %}
+    اعتمدها {{ period.finalized_by|default:"—" }} في {{ period.finalized_at|date:"Y-m-d H:i" }}.
+    التعديل يتطلب إعادة فتح موثقة.
+  {% else %}
+    مسودة قابلة لإعادة الاحتساب. لا تصبح أساسًا للشهر التالي حتى تُعتمد نهائيًا.
+  {% endif %}
+  {% if not period.is_complete %}
+    <span class="d-block mt-1 text-danger fw-bold">البيانات غير مكتملة؛ لا يمكن الاعتماد قبل معالجة الملاحظات أدناه.</span>
+  {% endif %}
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">صافي إيراد المبيعات</span><strong class="fs-5 ltr">{{ period.revenue|floatformat:2 }} ج.م</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">تكلفة البضاعة المباعة (مواد مباشرة)</span><strong class="fs-5 ltr">{{ period.cogs|floatformat:2 }} ج.م</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي الربح</span><strong class="fs-5 ltr">{{ period.gross_profit|floatformat:2 }} ج.م</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي المصاريف التشغيلية</span><strong class="fs-5 ltr">{{ period.operating_expenses_total|floatformat:2 }} ج.م</strong></div></div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">معادلة الشهر</h2>
+  <p class="mb-1 ltr text-end">
+    {{ period.revenue|floatformat:2 }} − {{ period.cogs|floatformat:2 }} = {{ period.gross_profit|floatformat:2 }} ج.م (إجمالي الربح)
+  </p>
+  <p class="mb-1 ltr text-end">
+    {{ period.gross_profit|floatformat:2 }} − {{ period.operating_expenses_total|floatformat:2 }} = {{ period.monthly_result|floatformat:2 }} ج.م (نتيجة الشهر قبل تغطية الخسائر)
+  </p>
+  <p class="mb-0 ltr text-end">
+    {{ period.monthly_result|floatformat:2 }} − {{ period.loss_recovered|floatformat:2 }} = {{ period.profit_after_loss_recovery|floatformat:2 }} ج.م (الربح المتبقي بعد تغطية الخسائر)
+  </p>
+  <p class="small text-muted mt-2 mb-0">
+    «نتيجة الشهر» ليست صافي الربح النهائي. «الربح المتبقي بعد التغطية» هو ما يتبقى بعد استرداد خسائر سابقة فقط.
+    الضرائب والتوزيعات والقيود المحاسبية خارج نطاق هذا الحساب.
+  </p>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">عمالة</span><strong class="ltr">{{ period.labor_expense|floatformat:2 }} ج.م</strong>{% if not period.labor_recorded %}<span class="badge bg-danger mt-1">غير مسجلة</span>{% endif %}</div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">كهرباء</span><strong class="ltr">{{ period.electricity_expense|floatformat:2 }} ج.م</strong>{% if not period.electricity_recorded %}<span class="badge bg-danger mt-1">غير مسجلة</span>{% endif %}</div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">صيانة</span><strong class="ltr">{{ period.maintenance_expense|floatformat:2 }} ج.م</strong>{% if not period.maintenance_recorded %}<span class="badge bg-danger mt-1">غير مسجلة</span>{% endif %}</div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">تشغيلية أخرى</span><strong class="ltr">{{ period.other_expense|floatformat:2 }} ج.م</strong>{% if not period.other_recorded %}<span class="badge bg-danger mt-1">غير مسجلة</span>{% endif %}</div></div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">الخسائر المتراكمة</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0"><tbody>
+    <tr><th>رصيد افتتاحي</th><td class="ltr">{{ period.opening_accumulated_loss|floatformat:2 }} ج.م</td></tr>
+    <tr><th>مسترد من خسائر سابقة</th><td class="ltr">{{ period.loss_recovered|floatformat:2 }} ج.م</td></tr>
+    <tr><th>رصيد ختامي</th><td class="ltr fw-bold">{{ period.closing_accumulated_loss|floatformat:2 }} ج.م</td></tr>
+    <tr><th>الربح المتبقي بعد التغطية</th><td class="ltr fw-bold">{{ period.profit_after_loss_recovery|floatformat:2 }} ج.م</td></tr>
+  </tbody></table></div>
+  <p class="small text-muted mb-0 mt-2">
+    الرصيد الافتتاحي مأخوذ من آخر شهر أرباح معتمد سابق، وليس من مصروف جديد. لا يُصفَّر الرصيد عند بداية سنة جديدة.
+    الشهر ذو النتيجة السالبة يزيد الرصيد، والشهر الموجب يغطيه أولًا ثم يظهر ربحًا متبقيًا فقط بعد التغطية.
+  </p>
+</div>
+
+{% if missing_notes %}
+<div class="alert alert-danger shadow-sm">
+  <h2 class="h6 alert-heading">ملاحظات البيانات الناقصة / القيود</h2>
+  <ul class="mb-0 small">{% for note in missing_notes %}<li>{{ note }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">تكلفة البضاعة المباعة حسب المنتج</h2>
+  <p class="small text-muted">
+    تعتمد على كميات الشحن النشطة فقط. تكلفة الوحدة هي لقطة المواد المباشرة المحفوظة في التكاليف، ولا تشمل العمالة/الكهرباء/الصيانة/المصاريف الأخرى، لأنها تُخصم مرة واحدة في نتيجة الشهر.
+    المنتجات المصنعة غير المباعة تبقى مخزونًا ولا تُخصم هنا.
+  </p>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>المنتج</th><th>الكمية المباعة</th><th>الإيراد</th><th>تكلفة المواد للوحدة</th><th>تكلفة البضاعة المباعة</th><th>عدد الشحنات</th><th>فترة التكلفة المصدر</th><th>الحالة</th></tr></thead>
+    <tbody>
+      {% for line in cogs_lines %}
+      <tr>
+        <td>{{ line.product.sku }} — {{ line.product.name_ar }}</td>
+        <td class="ltr">{{ line.quantity_sold_base|floatformat:4 }} {{ line.base_uom_code }}</td>
+        <td class="ltr">{{ line.revenue|floatformat:2 }}</td>
+        <td class="ltr">{{ line.cost_per_base_unit|floatformat:6|default:"—" }}</td>
+        <td class="ltr fw-bold">{{ line.cogs|floatformat:2 }}</td>
+        <td class="ltr">{{ line.shipment_count }}</td>
+        <td class="ltr">{% if line.source_period %}{{ line.source_period.year }}/{{ line.source_period.month|stringformat:"02d" }}{% else %}—{% endif %}</td>
+        <td>
+          {% if line.calculation_status == 'COMPLETE' %}<span class="badge bg-success">مكتمل</span>
+          {% elif line.calculation_status == 'MISSING_COST' %}<span class="badge bg-danger">تكلفة غير متاحة</span>
+          {% else %}<span class="badge bg-warning text-dark">غير معتمدة</span>{% endif %}
+          {% if line.notes %}<div class="small text-muted">{{ line.notes }}</div>{% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="8" class="text-muted text-center py-3">لا توجد مبيعات نشطة في هذا الشهر؛ تكلفة البضاعة المباعة صفر لأن لا شيء شُحن.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+    <h2 class="h5 mb-0">سجلات المصاريف المرتبطة بالشهر</h2>
+    <span class="small text-muted">المعكوس لا يدخل في الإجماليات. سجل بقيمة 0.00 يعني تأكيد عدم وجود مصروف، وليس بيانات ناقصة.</span>
+  </div>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>النوع</th><th>البيان / المرجع</th><th>التاريخ</th><th>المبلغ</th><th>الحالة</th><th>إجراء</th></tr></thead>
+    <tbody>
+      {% for expense in expenses %}
+      <tr>
+        <td>{{ expense.get_expense_type_display }}</td>
+        <td>
+          {{ expense.description }}
+          {% if expense.reference %}<div class="small text-muted ltr">{{ expense.reference }}</div>{% endif %}
+        </td>
+        <td class="ltr">{{ expense.expense_date|date:"Y-m-d"|default:"—" }}</td>
+        <td class="ltr">{{ expense.amount|floatformat:2 }}</td>
+        <td>{% if expense.status == 'ACTIVE' %}<span class="badge bg-success">ساري</span>{% else %}<span class="badge bg-dark">معكوس</span><div class="small text-muted">{{ expense.reversal_reason }}</div>{% endif %}</td>
+        <td>
+          {% if user.is_staff and expense.status == 'ACTIVE' and period.status != 'FINALIZED' %}
+            <a class="btn btn-sm btn-outline-danger" href="{% url 'costing:expense_reverse' expense.pk %}">عكس</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-muted text-center py-3">لا توجد سجلات مصاريف لهذا الشهر.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="d-flex flex-wrap gap-2">
+  {% if user.is_staff and period.status == 'DRAFT' %}
+    <form method="post" action="{% url 'costing:profit_period_finalize' period.pk %}" onsubmit="return confirm('اعتماد نتيجة الشهر يثبت رصيد الخسائر ويمنع التعديل إلا بإعادة فتح موثقة. هل تريد المتابعة؟');">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-success" {% if not period.is_complete %}disabled title="البيانات غير مكتملة"{% endif %}>اعتماد نتيجة الشهر نهائيًا</button>
+    </form>
+    <form method="post" action="{% url 'costing:profit_period_calculate' %}" class="d-flex gap-2">
+      {% csrf_token %}
+      <input type="hidden" name="year" value="{{ period.year }}">
+      <input type="hidden" name="month" value="{{ period.month }}">
+      <button type="submit" class="btn btn-outline-primary">إعادة الاحتساب</button>
+    </form>
+  {% endif %}
+  {% if user.is_staff and period.status == 'FINALIZED' %}
+    <a class="btn btn-warning" href="{% url 'costing:profit_period_reopen' period.pk %}">إعادة فتح موثقة</a>
+  {% endif %}
+</div>
+
+{% if period.status == 'FINALIZED' and period.reopen_reason %}
+<div class="alert alert-secondary small mt-3 mb-0">
+  <strong>آخر إعادة فتح:</strong> {{ period.reopened_by|default:"—" }} في {{ period.reopened_at|date:"Y-m-d H:i" }} — {{ period.reopen_reason }}
+</div>
+{% endif %}
+{% endblock %}

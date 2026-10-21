@@ -126,6 +126,13 @@ current persisted records on every request and are sent with
 | GET | `/api/v1/owner/inventory/` | Inventory by category and low-stock alerts. |
 | GET | `/api/v1/owner/production/` | Production status and output by line. |
 | GET | `/api/v1/owner/costing/` | Persisted monthly costing periods and latest product outputs. |
+| GET | `/api/v1/owner/profit/` | Persisted monthly management result, operating expenses, and loss carry-forward. |
+| GET | `/api/v1/owner/sales/orders/` | Paginated sales-order detail for the selected period. |
+| GET | `/api/v1/owner/purchases/orders/` | Paginated purchase-order detail for the selected period. |
+| GET | `/api/v1/owner/inventory/stock/` | Paginated current stock rows from the shared ledger. |
+| GET | `/api/v1/owner/inventory/movements/` | Paginated stock movements for the selected period. |
+| GET | `/api/v1/owner/production/orders/` | Paginated production orders created in the selected period. |
+| GET | `/api/v1/owner/costing/periods/` | Paginated persisted costing periods in the selected range. |
 
 Query parameters for all owner endpoints:
 
@@ -133,6 +140,27 @@ Query parameters for all owner endpoints:
   default is the last 30 calendar days, and the maximum range is 366 days.
 - `granularity`: `day` or `month`; defaults to `month` for ranges over 90 days.
 - `recent_limit`: 1 to 20, default 5.
+- `dimension_limit`: 1 to 100, default 20. It limits grouped customer, supplier,
+  and product rows plus the costing section's period and order-detail rows and the
+  monthly-profit period rows;
+  aggregate totals still cover the full period. Paginated detail endpoints use
+  `page_size` instead.
+
+The detail endpoints use the same period rules and page-number pagination as the
+other API list endpoints (`page`, `page_size`; maximum 100). Additional filters:
+
+- Sales orders: `status`, `customer` (numeric id), and `customer_submitted`
+  (`true`/`false`).
+- Purchase orders: `status` and `supplier` (numeric id).
+- Stock movements: `movement_type` and `product` (numeric id). The date range is
+  applied to the movement's `occurred_at` date.
+- Production orders: `status` and `production_line` (line code). The date range
+  is applied to `ProductionOrder.created_at`.
+- Costing periods: `status`.
+
+Invalid choices, non-positive ids, invalid dates, and reversed date ranges return
+the standard 400 error envelope. Customer users are rejected from every owner
+endpoint, including the detail endpoints.
 
 The dashboard is a read-only projection. It does not recalculate product costs
 or create accounting entries.
@@ -150,27 +178,58 @@ or create accounting entries.
   includes fully reversed receipts, while `active_receipts_count` counts receipts
   with at least one non-reversed line and `fully_reversed_receipts_count` counts
   documents with no non-reversed line. `count_basis` documents the basis.
-- Inventory: base-unit quantities by category and base UOM. Quantities in
+- Inventory: current base-unit quantities by category and base UOM from the
+  shared ledger, plus movement activity for the selected period. Quantities in
   different dimensions are never summed, and no inventory valuation is claimed.
+  `historical_balance_available=false` makes clear that current stock is not an
+  as-of-date historical balance. `movement_summary` excludes reversal entries and
+  original movements that have been reversed, then reports those separately to
+  avoid double counting.
 - Low stock: active products with a positive `catalog.Product.low_stock_threshold`
   whose total base-unit balance is at or below the threshold. Staff configure the
   threshold on the product.
-- Production: production-order status counts and good/scrap output by production
-  line, grouped by base UOM. `status_counts_basis` states that status counts use
-  `ProductionOrder.created_at`, while `output_basis` states that output uses
-  `ProductionResult.occurred_at`. The two date bases are intentionally different;
-  output from an order created in another period can appear in the requested
-  period. `quantity_note` repeats this caveat.
+- Production: production-order status counts, planned quantities, active material
+  consumption, good/scrap output, and yield by production line, grouped by base
+  UOM. `status_counts_basis` states that status counts use
+  `ProductionOrder.created_at`, `consumption_basis` uses the issue movement's
+  `occurred_at`, and `output_basis` uses `ProductionResult.occurred_at`. The date
+  bases are intentionally different; output from an order created in another
+  period can appear in the requested period (`cross_period_output_count`).
+  `reconciliation` compares total output with the sum attributed to the displayed
+  production lines and reports any unallocated output instead of assuming zero.
+  Sales, purchasing, and inventory remain shared ledgers without a duplicated
+  per-line ledger.
 - Customers and suppliers: contact-master counts and active counts only.
 - Costing: the latest persisted monthly periods and the latest period's product
-  entries. Each period includes `labor_recorded`, `labor_completeness`,
-  `allocation_policy`, `waste_policy`, `material_valuation_method`,
-  `actual_material_cost`, `material_cost_assigned_to_good`,
-  `waste_material_cost`, and a `reconciliation` object with
-  `materials_reconcile` and `cost_total_reconciles`. Product entries expose the
-  persisted material, labor, electricity, water, and other-industrial allocation
-  components plus `calculation_status`. These values are read from persisted
-  rows; the API does not recalculate product costs.
+  entries. Each period includes `labor_recorded`, `electricity_recorded`,
+  `water_recorded`, the corresponding completeness labels,
+  `missing_required_expenses`, `allocation_policy`, `waste_policy`,
+  `material_valuation_method`, `actual_material_cost`,
+  `material_cost_assigned_to_good`, `waste_material_cost`, and a
+  `reconciliation` object with `materials_reconcile` and
+  `cost_total_reconciles`. Product entries expose the persisted material, labor,
+  electricity, water, and other-industrial allocation components plus
+  `calculation_status`. These values are read from persisted rows; the API does
+  not recalculate product costs. A recorded `0.00` utility is complete; a missing
+  record is reported as missing.
+- Monthly profit: `/api/v1/owner/profit/` and the dashboard's `profit_loss`
+  object read persisted `MonthlyProfitPeriod` and `MonthlyProfitCOGSLine` rows.
+  Each period exposes net revenue, COGS, gross profit, each operating-expense
+  category, operating-expense total, `monthly_result`,
+  `opening_accumulated_loss`, `loss_recovered`,
+  `closing_accumulated_loss`, and `profit_after_loss_recovery`, plus
+  completeness flags, missing-data notes, finalization/reopen audit metadata,
+  COGS product lines, and expense records. `accounting_final` is `false`; the
+  monthly result is a management operating result before loss recovery and is
+  not final accounting net profit.
+- Data quality: `data_quality` returns warning codes for low stock, negative
+  stock, customer price review, unpriced legacy orders, missing utilities,
+  incomplete costing, fallback costing review, draft orders, open production,
+  missing production results, missing monthly operating expenses, incomplete
+  COGS, incomplete profit periods, draft profit periods, and profit months not
+  yet calculated. Informational codes explicitly state that accounting and
+  historical stock are unavailable and that the monthly result is management
+  data only.
 
 ### Financial integrity and unavailable metrics
 
@@ -179,13 +238,16 @@ expense. The API never computes or labels sales minus purchases as profit.
 Because shared accounting, invoices, payments, receivables, payables, and
 validated postings do not exist, the dashboard returns `null` for:
 
-- profit and net profit;
+- accounting profit and net profit;
 - outstanding receivables;
 - outstanding payables;
 - cash balances.
 
 It also returns `accounting_available=false` and lists the missing dependencies.
-No currency, tax, payment-term, or accounting-period policy is invented.
+The separate `profit_loss` section reports persisted monthly management results
+and accumulated-loss recovery, but it explicitly sets `accounting_final=false`
+and must not be called final accounting net profit. No currency, tax,
+payment-term, or accounting-period policy is invented.
 
 Monthly costing outputs remain the source for product costs. The API reads
 persisted `CostingPeriod` and `ProductCostingEntry` records and does not
@@ -198,9 +260,10 @@ the cost total reconciles as
 `material_cost_assigned_to_good + labor + electricity + water + other_industrial
 = total_production_cost`.
 
-Labor is a required monthly record when production exists. A missing labor record
-marks the period incomplete and blocks finalization; an explicitly recorded
-`0.00` is a confirmed zero and remains complete. Fallback allocations (a
+Labor, electricity, and water are required monthly records when production
+exists. A missing record marks the period incomplete and blocks finalization; an
+explicitly recorded `0.00` is a confirmed zero and remains complete. Fallback
+allocations (a
 line/product scope with no matching production, or a product with no usable good
 units) are marked `INCOMPLETE` and require review. Costing remains provisional and
 not accounting-final until owner/accountant approval; the dashboard response
@@ -208,7 +271,7 @@ explicitly records this review status.
 
 ## Pagination and errors
 
-Customer list endpoints use page-number pagination:
+Customer and owner detail-list endpoints use page-number pagination:
 
 - `?page=1`
 - `?page_size=25` (maximum 100)
@@ -242,8 +305,14 @@ session authentication is enabled only for the schema and documentation views.
 - No Flutter applications, push notifications, WebSockets, or live streaming.
   Mobile clients refresh when returning to a screen or after a write.
 - No accounting, invoices, returns/credit notes, payments, tax, receivables,
-  payables, cash, or authoritative profit.
-- No inventory valuation, lot/serial tracking, or stock reservation.
+  payables, cash, or authoritative accounting profit. The monthly management
+  result and loss carry-forward are persisted separately and are not final net
+  profit.
+- No inventory valuation, lot/serial tracking, stock reservation, or historical
+  as-of-date stock balance.
+- No production-line attribution on sales, purchasing, or shared inventory
+  ledger entries. Production reports can be filtered by line; reports never
+  allocate or duplicate shared records to manufacture a line breakdown.
 - No customer registration, password reset, order cancellation, or customer
   price-list administration API.
 - No CORS configuration; native mobile HTTP clients do not need it. A Flutter web

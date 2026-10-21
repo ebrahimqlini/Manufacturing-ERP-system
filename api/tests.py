@@ -16,7 +16,7 @@ from costing.models import CostingPeriod, ProductCostingEntry, ProductSellingPri
 from inventory.models import StockMovement, StorageLocation, Warehouse
 from inventory.services import balance_for, post_movement, reverse_movement
 from manufacturing.models import ProductionLine, ProductionOrder, ProductionResult
-from purchasing.models import Supplier
+from purchasing.models import PurchaseOrder, Supplier
 from purchasing.services import (
     confirm_order as confirm_purchase_order,
     create_receipt,
@@ -758,9 +758,82 @@ class OwnerDashboardAPITests(APITestCase):
         self.assertIsNone(financial["cash_balance"])
         self.assertFalse(financial["sales_commercial_value_is_revenue"])
         self.assertFalse(financial["purchase_commercial_value_is_expense"])
+        self.assertTrue(financial["monthly_management_profit_available"])
+        self.assertFalse(financial["monthly_management_profit_is_accounting_net_profit"])
+        self.assertIn("profit_loss", data)
+        self.assertFalse(data["profit_loss"]["accounting_final"])
+        self.assertEqual(data["profit_loss"]["periods_count"], 0)
         self.assertIn("Shared accounting chart of accounts, journal, and ledger", financial["missing_dependencies"])
         self.assertEqual(data["data_sources"]["accounting"], "unavailable; not implemented")
         self.assertIn("LOW_STOCK", {row["code"] for row in data["operational_alerts"]})
+
+    def test_owner_detail_endpoints_are_filtered_paginated_and_owner_only(self):
+        self._build_operational_fixture()
+        params = self._period_params()
+
+        sales_response = self.owner_client.get(
+            reverse("api:owner-sales-orders"),
+            {**params, "status": SalesOrder.Status.CONFIRMED, "page_size": 1},
+        )
+        self.assertEqual(sales_response.status_code, 200)
+        sales_data = sales_response.json()
+        self.assertEqual(sales_data["count"], 1)
+        self.assertEqual(sales_data["results"][0]["status"], "CONFIRMED")
+        self.assertIn("ordered_value", sales_data["results"][0])
+        self.assertIn("pricing_status", sales_data["results"][0])
+
+        invalid_status = self.owner_client.get(
+            reverse("api:owner-sales-orders"), {**params, "status": "NOT_A_STATUS"}
+        )
+        self.assertEqual(invalid_status.status_code, 400)
+        self.assertEqual(
+            self.customer_client.get(
+                reverse("api:owner-sales-orders"), params
+            ).status_code,
+            403,
+        )
+
+        purchases_response = self.owner_client.get(
+            reverse("api:owner-purchase-orders"),
+            {**params, "status": PurchaseOrder.Status.CONFIRMED},
+        )
+        self.assertEqual(purchases_response.status_code, 200)
+        self.assertEqual(purchases_response.json()["count"], 1)
+        self.assertEqual(
+            purchases_response.json()["results"][0]["receipt_state"],
+            PurchaseOrder.ReceiptState.NOT_RECEIVED,
+        )
+
+        stock_response = self.owner_client.get(
+            reverse("api:owner-stock"), {"page_size": 1}
+        )
+        self.assertEqual(stock_response.status_code, 200)
+        stock_data = stock_response.json()
+        self.assertEqual(stock_data["count"], 2)
+        self.assertEqual(len(stock_data["results"]), 1)
+        self.assertIn("quantity_base", stock_data["results"][0])
+
+        movements_response = self.owner_client.get(
+            reverse("api:owner-stock-movements"),
+            {**params, "page_size": 2},
+        )
+        self.assertEqual(movements_response.status_code, 200)
+        self.assertGreaterEqual(movements_response.json()["count"], 3)
+        self.assertEqual(len(movements_response.json()["results"]), 2)
+
+        production_response = self.owner_client.get(
+            reverse("api:owner-production-orders"), {**params, "page_size": 1}
+        )
+        self.assertEqual(production_response.status_code, 200)
+        self.assertEqual(production_response.json()["count"], 1)
+        self.assertEqual(len(production_response.json()["results"]), 1)
+
+        costing_response = self.owner_client.get(
+            reverse("api:owner-costing-periods"), {**params, "page_size": 1}
+        )
+        self.assertEqual(costing_response.status_code, 200)
+        self.assertEqual(costing_response.json()["count"], 1)
+        self.assertEqual(costing_response.json()["results"][0]["entry_count"], 1)
 
     def test_costing_reconciliation_exposes_separate_abnormal_waste(self):
         period = CostingPeriod.objects.create(
@@ -915,6 +988,7 @@ class OwnerDashboardAPITests(APITestCase):
             "api:owner-inventory": "inventory",
             "api:owner-production": "production",
             "api:owner-costing": "costing",
+            "api:owner-profit": "profit_loss",
         }
         for name, key in endpoints.items():
             response = self.owner_client.get(reverse(name), self._period_params())

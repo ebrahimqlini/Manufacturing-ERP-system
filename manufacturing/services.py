@@ -162,6 +162,12 @@ def issue_material(*, order, requirement, quantity, unit, reference, actor):
     if not reference or not reference.strip():
         raise ValidationError({"reference": "مرجع الصرف مطلوب لمنع التكرار."})
     with transaction.atomic():
+        from costing.models import ensure_period_open
+
+        posting_date = timezone.localdate()
+        ensure_period_open(
+            posting_date.year, posting_date.month, "صرف مواد لأمر إنتاج"
+        )
         order = ProductionOrder.objects.select_for_update().select_related("product", "source_location").get(pk=order.pk)
         if order.status not in ACTIVE_ORDER_STATUSES:
             raise ValidationError("لا يمكن صرف مواد لأمر غير مطلق أو قيد التنفيذ.")
@@ -308,6 +314,12 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
             if same:
                 return existing, False
             raise ValidationError("مفتاح الإرسال سبق استخدامه ببيانات مختلفة.")
+        from costing.models import ensure_period_open
+
+        posting_date = timezone.localdate()
+        ensure_period_open(
+            posting_date.year, posting_date.month, "تسجيل نتيجة إنتاج"
+        )
         if order.status not in ACTIVE_ORDER_STATUSES:
             raise ValidationError("لا يمكن تسجيل إنتاج لأمر غير نشط.")
         if order.product.base_uom_id != order.base_unit_snapshot_id:

@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.serializers import AuthTokenSerializer
@@ -13,6 +14,16 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 
 from catalog.models import Product
+from costing.models import CostingPeriod
+from inventory.models import StockMovement
+from manufacturing.models import ProductionOrder
+from purchasing.models import PurchaseOrder
+from reports.services import (
+    _costing_periods_for_range,
+    annotate_purchase_order_progress,
+    annotate_sales_order_progress,
+    current_stock_rows,
+)
 from sales.models import SalesOrder
 from sales.services import submit_customer_order_request
 
@@ -21,6 +32,7 @@ from .dashboard import (
     dashboard_payload,
     inventory_payload,
     production_payload,
+    profit_payload,
     purchases_payload,
     sales_payload,
 )
@@ -34,6 +46,17 @@ from .serializers import (
     CustomerProfileSerializer,
     DashboardQuerySerializer,
     DashboardResponseSerializer,
+    OwnerCostingPeriodQuerySerializer,
+    OwnerCostingPeriodSerializer,
+    OwnerMovementQuerySerializer,
+    OwnerProductionOrderQuerySerializer,
+    OwnerProductionOrderSerializer,
+    OwnerPurchaseOrderDetailSerializer,
+    OwnerPurchaseOrderQuerySerializer,
+    OwnerSalesOrderDetailSerializer,
+    OwnerSalesOrderQuerySerializer,
+    OwnerStockMovementSerializer,
+    OwnerStockRowSerializer,
     TokenResponseSerializer,
 )
 
@@ -220,6 +243,206 @@ class OwnerCostingView(APIView):
     @extend_schema(parameters=[DashboardQuerySerializer], responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
         return Response(costing_payload(_validated_dashboard_query(request)))
+
+
+class OwnerProfitView(APIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+
+    @extend_schema(
+        parameters=[DashboardQuerySerializer],
+        responses={200: OpenApiTypes.OBJECT},
+        description=(
+            "Persisted monthly management result, operating expenses, and loss "
+            "carry-forward. This is not accounting net profit."
+        ),
+    )
+    def get(self, request):
+        return Response(profit_payload(_validated_dashboard_query(request)))
+
+
+def _validated_query(request, serializer_class):
+    serializer = serializer_class(data=request.query_params)
+    serializer.is_valid(raise_exception=True)
+    return serializer.validated_data
+
+
+class OwnerSalesOrderListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    serializer_class = OwnerSalesOrderDetailSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def _query(self):
+        return _validated_query(self.request, OwnerSalesOrderQuerySerializer)
+
+    @extend_schema(
+        parameters=[OwnerSalesOrderQuerySerializer],
+        responses={200: OwnerSalesOrderDetailSerializer(many=True)},
+        description="Paginated sales-order detail for the owner report.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self._query()
+        queryset = (
+            SalesOrder.objects.filter(
+                order_date__range=(query["start_date"], query["end_date"])
+            )
+            .select_related("customer")
+            .prefetch_related("lines")
+        )
+        if query.get("status"):
+            queryset = queryset.filter(status=query["status"])
+        if query.get("customer"):
+            queryset = queryset.filter(customer_id=query["customer"])
+        if query.get("customer_submitted") is not None:
+            queryset = queryset.filter(customer_submitted=query["customer_submitted"])
+        return annotate_sales_order_progress(queryset).order_by(
+            "-order_date", "-created_at", "-pk"
+        )
+
+
+class OwnerPurchaseOrderListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    serializer_class = OwnerPurchaseOrderDetailSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def _query(self):
+        return _validated_query(self.request, OwnerPurchaseOrderQuerySerializer)
+
+    @extend_schema(
+        parameters=[OwnerPurchaseOrderQuerySerializer],
+        responses={200: OwnerPurchaseOrderDetailSerializer(many=True)},
+        description="Paginated purchase-order detail for the owner report.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self._query()
+        queryset = PurchaseOrder.objects.filter(
+            order_date__range=(query["start_date"], query["end_date"])
+        ).select_related("supplier")
+        if query.get("status"):
+            queryset = queryset.filter(status=query["status"])
+        if query.get("supplier"):
+            queryset = queryset.filter(supplier_id=query["supplier"])
+        return annotate_purchase_order_progress(queryset).order_by(
+            "-order_date", "-created_at", "-pk"
+        )
+
+
+class OwnerStockMovementListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    serializer_class = OwnerStockMovementSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def _query(self):
+        return _validated_query(self.request, OwnerMovementQuerySerializer)
+
+    @extend_schema(
+        parameters=[OwnerMovementQuerySerializer],
+        responses={200: OwnerStockMovementSerializer(many=True)},
+        description="Paginated inventory movement history for the owner report.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self._query()
+        queryset = StockMovement.objects.filter(
+            occurred_at__date__range=(query["start_date"], query["end_date"])
+        ).select_related(
+            "product",
+            "product__base_uom",
+            "unit",
+            "source_location",
+            "destination_location",
+            "reversal_of",
+        )
+        if query.get("movement_type"):
+            queryset = queryset.filter(movement_type=query["movement_type"])
+        if query.get("product"):
+            queryset = queryset.filter(product_id=query["product"])
+        return queryset.order_by("-occurred_at", "-posted_at")
+
+
+class OwnerProductionOrderListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    serializer_class = OwnerProductionOrderSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def _query(self):
+        return _validated_query(self.request, OwnerProductionOrderQuerySerializer)
+
+    @extend_schema(
+        parameters=[OwnerProductionOrderQuerySerializer],
+        responses={200: OwnerProductionOrderSerializer(many=True)},
+        description="Paginated production-order detail for the owner report.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self._query()
+        queryset = ProductionOrder.objects.filter(
+            created_at__date__range=(query["start_date"], query["end_date"])
+        ).select_related("product", "product__base_uom", "production_line", "planned_unit")
+        if query.get("status"):
+            queryset = queryset.filter(status=query["status"])
+        if query.get("production_line"):
+            queryset = queryset.filter(
+                production_line__code=query["production_line"]
+            )
+        return queryset.order_by("-created_at", "-pk")
+
+
+class OwnerCostingPeriodListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    serializer_class = OwnerCostingPeriodSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def _query(self):
+        return _validated_query(self.request, OwnerCostingPeriodQuerySerializer)
+
+    @extend_schema(
+        parameters=[OwnerCostingPeriodQuerySerializer],
+        responses={200: OwnerCostingPeriodSerializer(many=True)},
+        description="Paginated persisted costing periods for the owner report.",
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self._query()
+        queryset = _costing_periods_for_range(
+            query["start_date"], query["end_date"]
+        ).annotate(entry_count=Count("product_entries"))
+        if query.get("status"):
+            queryset = queryset.filter(status=query["status"])
+        return queryset.order_by("-year", "-month")
+
+
+class OwnerStockListView(APIView):
+    permission_classes = [IsAuthenticated, IsOwnerUser]
+    pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        parameters=[DashboardQuerySerializer],
+        responses={200: OwnerStockRowSerializer(many=True)},
+        description=(
+            "Paginated current stock rows derived directly from the authoritative "
+            "inventory ledger service."
+        ),
+    )
+    def get(self, request):
+        _validated_dashboard_query(request)
+        paginator = self.pagination_class()
+        rows = current_stock_rows()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(
+            OwnerStockRowSerializer(page, many=True).data
+        )
 
 
 class TokenObtainView(ObtainAuthToken):

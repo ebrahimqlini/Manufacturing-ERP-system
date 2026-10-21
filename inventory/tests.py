@@ -10,7 +10,7 @@ from django.urls import reverse
 
 from catalog.models import Product, ProductCategory, ProductUnitConversion, UnitOfMeasure
 from .models import StockLedgerEntry, StockMovement, StorageLocation, Warehouse
-from .services import balance_for, post_movement, reverse_movement
+from .services import balance_for, post_movement, reverse_movement, to_base_quantity
 
 
 class InventoryLedgerTests(TestCase):
@@ -161,6 +161,27 @@ class InventoryLedgerTests(TestCase):
         with self.assertRaises(ValidationError):
             post_movement(reference="INEXACT", movement_type=StockMovement.Type.RECEIPT, product=self.cup, quantity=Decimal("0.5"),
                           unit=alternate, actor=self.staff, destination_location=self.a)
+
+    def test_inactive_units_are_rejected_before_stock_posting(self):
+        inactive = UnitOfMeasure.objects.create(
+            code="INACTIVE", name_ar="وحدة موقوفة", dimension="count", active=False
+        )
+        ProductUnitConversion.objects.create(
+            product=self.cup, unit=inactive, factor=Decimal("1")
+        )
+        with self.assertRaisesMessage(ValidationError, "وحدة قياس نشطة"):
+            to_base_quantity(self.cup, Decimal("1"), inactive)
+        with self.assertRaisesMessage(ValidationError, "وحدة قياس نشطة"):
+            post_movement(
+                reference="INACTIVE-UNIT",
+                movement_type=StockMovement.Type.RECEIPT,
+                product=self.cup,
+                quantity=Decimal("1"),
+                unit=inactive,
+                actor=self.staff,
+                destination_location=self.a,
+            )
+        self.assertFalse(StockMovement.objects.filter(reference="INACTIVE-UNIT").exists())
 
     def test_posted_movements_cannot_be_edited_or_deleted(self):
         movement = self.post("FIXED", StockMovement.Type.RECEIPT, destination=self.a)

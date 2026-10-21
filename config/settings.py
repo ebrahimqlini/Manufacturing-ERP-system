@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "costing",
     "purchasing",
     "sales",
+    "reports",
 ]
 
 MIDDLEWARE = [
@@ -163,4 +164,10 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
+    "ENUM_NAME_OVERRIDES": {
+        "SalesOrderStatusEnum": "sales.models.SalesOrder.Status",
+        "PurchaseOrderStatusEnum": "purchasing.models.PurchaseOrder.Status",
+        "ProductionOrderStatusEnum": "manufacturing.models.ProductionOrder.Status",
+        "CostingPeriodStatusEnum": "costing.models.CostingPeriod.Status",
+    },
 }

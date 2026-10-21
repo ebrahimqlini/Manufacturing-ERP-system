@@ -144,7 +144,7 @@ Implemented in this checkout:
 - Dashboard document totals now include cancelled orders and fully reversed shipments/receipts, with separate `non_cancelled_orders_count`, `cancelled_orders_count`, `active_shipments_count`/`active_receipts_count`, and `fully_reversed_shipments_count`/`fully_reversed_receipts_count` fields and a `count_basis` object. Production `status_counts_basis` uses `ProductionOrder.created_at`, while `output_basis` uses `ProductionResult.occurred_at`; they are intentionally different cohorts.
 - Costing projections expose persisted `labor_recorded`, allocation-policy/waste-policy labels, material valuation method, actual/assigned/waste material amounts, reconciliation flags, and per-product allocated labor/electricity/water/other components. The API performs only display-level arithmetic on stored rows.
 - Added explicit catalog configuration fields `Product.available_to_customers` and `Product.low_stock_threshold` (zero disables the alert), a one-to-one `Customer.user` link, and `SalesOrder.customer_submitted`. Staff forms/admin expose the catalog and customer-link fields. Migrations `catalog.0003_product_available_to_customers_and_more` and `sales.0003_customer_user_salesorder_customer_submitted` were generated.
-- Commercial sales/purchase document values are labelled non-accounting. The dashboard returns `null` for profit, net profit, receivables, payables, and cash, with `accounting_available=false` and the missing dependencies. It never computes sales minus purchases as profit. Costing is read from persisted monthly records and is not recalculated by the API; electricity/labor allocation remains a costing-service result that is not accounting-final.
+- Commercial sales/purchase document values are labelled non-accounting. The dashboard returns `null` for accounting profit, net profit, receivables, payables, and cash, with `accounting_available=false` and the missing dependencies. It never computes sales minus purchases as profit. Costing is read from persisted monthly records and is not recalculated by the API; electricity/labor allocation remains a costing-service result that is not accounting-final. Prompt 8 adds a separate persisted monthly management result and loss carry-forward, explicitly marked as non-accounting.
 - Added API documentation in `API.md`, updated `README.md`, `DECISIONS.md`, `PROMPT_SPECS.md`, and `TODO.md`, and retained the existing web application and staff-only sales/customer pages.
 
 ### API verification
@@ -170,9 +170,157 @@ Implemented in this checkout:
 - No Flutter applications, push notifications, WebSockets, or live-update transport.
 - No customer registration/password-reset, customer order cancellation, customer price-list administration, or order-request idempotency key.
 - No authoritative accounting: invoices, supplier/customer credit notes, payments, tax, receivables, payables, cash, accounting periods, and postings remain unavailable.
-- No inventory valuation, lot/serial tracking, or stock reservation. Low-stock thresholds are per product across all locations, not per warehouse/location reorder points.
+- No inventory valuation, lot/serial tracking, stock reservation, or historical as-of-date stock balance. Low-stock thresholds are per product across all locations, not per warehouse/location reorder points.
+- No production-line attribution on sales, purchasing, or shared inventory ledger records. Production reports can be filtered by line; shared records are never duplicated or artificially allocated to produce a line breakdown.
 - No CORS policy; native mobile clients do not need one. A Flutter web client would require an explicit policy.
 - Product prices exposed to customers are owner reference prices and their own order snapshots, not quotations; no cost or margin is exposed.
+
+## Prompt 7 — consolidated and line-level reporting (implemented)
+
+Implemented in this checkout:
+
+- Added a read-only `reports` app with a shared service layer used by both the staff web reports and the existing owner API. It defines no models and writes no domain records; no parallel inventory/sales/purchasing ledger or duplicate posting logic was introduced.
+- Added staff-only Arabic RTL web pages at `/reports/` for overview, sales, purchasing, inventory, production, and costing, with shared period/granularity filters, empty states, explicit unit labels, source/date/status bases, and data-quality warnings. Production also supports filtering by production line; sales, purchasing, and shared inventory are not artificially split because their records have no duplicated per-line ledger.
+- Reused the existing `/api/v1/owner/` section endpoints and added paginated detail endpoints for sales orders, purchase orders, current stock, stock movements, production orders, and costing periods. The detail endpoints support the documented period/filter/pagination rules, reject customer users, and return the standard error envelope for invalid filters.
+- Sales reporting separates commercial order value, net shipped value, total shipment value, and reversed value. Cancelled orders are excluded from active values and quantities but retained in audit counts. Shipments with reversed lines are counted separately as partially or fully reversed, and reversal lines are excluded from net totals to avoid double counting.
+- Purchasing reporting applies the same rules to purchase orders and receipts. Receipt state and outstanding quantities are derived from active received quantities; cancelled orders and reversed receipt lines are excluded from active values and quantities.
+- Inventory reporting reads current per-product balances from `inventory.services.ledger_balances` and movement activity from the immutable stock ledger. Active movement totals exclude reversal entries and original movements that have been reversed; reversal and reversed-original counts are reported separately. Current balances are explicitly not presented as historical as-of-date balances, and no inventory valuation is claimed.
+- Production reporting covers order status counts by creation date, planned quantities, active material consumption by issue movement date, good/scrap output and yield by result date, cross-period output, open orders, orders without results, and recent activity. It reports output reconciliation by base UOM against the sum attributed to production lines with an explicit unallocated check. Quantity dimensions are never mixed.
+- Costing reporting reads persisted `CostingPeriod`, `ProductCostingEntry`, and `ProductionOrderCostingEntry` records without recalculating product cost, allocation drivers, or expenses. It exposes period/product/order components, completeness, review flags, missing-data notes, and display-level reconciliation. Added persisted `electricity_recorded` and `water_recorded` snapshots plus migration `costing.0007_costingperiod_electricity_water_recorded`; a missing utility record differs from an explicitly recorded `0.00`.
+- Reports return customer/supplier contact-master summaries, recent documents/activity, and `data_quality` warnings for low/negative stock, customer price review, unpriced legacy orders, missing utilities, incomplete/fallback costing, draft orders, open production, and missing production results. Informational warnings state that accounting and historical stock are unavailable.
+- Commercial sales/purchase values remain explicitly non-accounting. No revenue, profit, receivables, payables, cash, WIP balance, allocation driver, or historical stock figure is invented. Report responses are request-time fresh with no caching, WebSockets, or push notifications.
+- Updated `API.md`, `DECISIONS.md`, `README.md`, `TODO.md`, and this status document for the verified behavior. No Flutter work or Prompt 8 controls were started.
+
+### Reporting verification
+
+- `manage.py check` passed with no issues and `makemigrations --check --dry-run` reported `No changes detected`.
+- Focused report tests passed: 13 tests covering sales, purchasing, inventory, production, costing, reversals, units, line filtering/reconciliation, web rendering/authorization, invalid-period fallback, and monthly-profit reporting/warnings.
+- Focused owner API tests passed: 9 tests covering existing dashboard contracts plus detail-endpoint authorization, filtering, pagination, invalid status handling, and response fields.
+- OpenAPI generation with `manage.py spectacular --validate` exited successfully with zero warnings. Explicit enum-name overrides were added for the sales, purchase, production, and costing status enums.
+- Full PostgreSQL suite: `manage.py test --keepdb` ran 217 tests with zero failures and zero skips, preserving `test_paper_factory`. The verified target was `DB_ENGINE=postgres`, `DB_NAME=test_paper_factory`, `DB_USER=paper_factory_app`; `paper_factory` was never connected to or modified.
+- The migration `costing.0007_costingperiod_electricity_water_recorded` is recorded as applied to `test_paper_factory`. No production migration was run.
+- `git diff --check` passed apart from Git's existing LF-to-CRLF advisory warnings. Nothing was staged, committed, or pushed.
+
+## Prompt 8 — monthly profit, operating expenses, and loss carry-forward (implemented)
+
+Implemented in this checkout:
+
+- Added persisted monthly management profit with `MonthlyProfitPeriod` and
+  `MonthlyProfitCOGSLine`. Gross profit is net sales revenue minus cost of goods sold;
+  the monthly result is gross profit minus recorded labor, electricity, maintenance, and
+  other operating expenses. It is explicitly a management operating result, not accounting
+  net profit, tax, or a distribution.
+- COGS is calculated only for quantities actually shipped. It uses the latest persisted
+  direct-material cost per good unit on or before the shipment month, never a new product
+  cost calculation. Unsold manufactured inventory remains inventory and is not expensed.
+  Labor, electricity, water, maintenance, and other overhead are not embedded in COGS, so
+  operating expenses are deducted once rather than twice.
+- Added the `MAINTENANCE` expense category and extended `MonthlyExpense` with expense and
+  payment dates, reference, active/reversed status, reversal actor/time/reason, and
+  updater audit fields. Active expenses are summed once per month and are not arbitrarily
+  reallocated across production lines. A missing category is different from an explicitly
+  recorded `0.00`; missing labor, electricity, maintenance, or other expenses block
+  monthly-profit finalization. Water remains a recorded costing expense but is excluded
+  from the agreed monthly profit calculation.
+- Loss carry-forward is persisted from the latest finalized earlier month and continues
+  across year boundaries without resetting. The period stores revenue, COGS, gross profit,
+  each operating expense category, the monthly result, opening accumulated loss, loss
+  recovered, closing accumulated loss, and profit remaining after recovery. Carried losses
+  are not recorded as new expenses.
+- Finalization is idempotent and blocked while data is incomplete. A later finalized month
+  blocks finalizing or reopening an older month until the later month is reopened first.
+  Reopening requires a reason and preserves the original finalization metadata plus reopen
+  actor/time/reason. Finalized profit periods protect expenses, costing recalculation, new
+  shipments in that month, shipment reversals, and deletion. Draft successor periods are
+  recalculated against a newly finalized balance.
+- Added staff web pages under `/costing/profit/` for listing, calculating, viewing,
+  finalizing, and reopening monthly results, plus an audited expense-reversal page. Added a
+  staff `/reports/profit/` report and profit warnings to the existing report data-quality
+  panel. Extended the owner dashboard and added the read-only `/api/v1/owner/profit/`
+  endpoint; all responses label the result as management data and do not claim final
+  accounting net profit.
+- Migration `costing.0008_monthly_profit_and_expense_controls` adds the new fields/models
+  and backfills existing expense dates and direct-material unit-cost snapshots from already
+  persisted amounts; it does not rerun costing or rewrite finalized product costs.
+
+### Prompt 8 verification
+
+- Required scenario passed: month 1 result `−EGP 20,000` with closing accumulated loss
+  `EGP 20,000`; month 2 result `EGP 35,000` recovers `EGP 20,000`, closes the loss at
+  `EGP 0`, and leaves `EGP 15,000` after recovery.
+- Partial recovery passed: a `EGP 10,000` result against a `EGP 20,000` opening loss
+  recovers `EGP 10,000`, closes at `EGP 10,000`, and leaves no remaining profit.
+- Additional tests cover consecutive losses, a zero-result month, year-boundary
+  carry-forward, profitable months with no prior loss, missing versus explicit-zero
+  expenses, cross-period expense charging, unsold inventory, partial and credit sales,
+  reversed shipments and cancelled orders, duplicate expense rows, labor double-counting,
+  decimal precision, permissions, finalized-period protection, authorized corrections,
+  incomplete costing, multiple expense scopes, reports, and API exposure.
+- Full PostgreSQL suite: `manage.py test --keepdb` passed with zero failures and zero
+  skips. The verified target was `DB_ENGINE=postgres`, `DB_NAME=test_paper_factory`,
+  `DB_USER=paper_factory_app`; `paper_factory` was never connected to or modified.
+  `costing.0008_monthly_profit_and_expense_controls` was applied only to
+  `test_paper_factory`. No production migration was run.
+- `manage.py check` passed, `makemigrations --check --dry-run` reported no changes, and
+  OpenAPI schema validation passed. Nothing was staged, committed, or pushed.
+
+## Prompt 9 — end-to-end audit (implemented)
+
+An evidence-based audit of inventory, manufacturing, purchasing, sales, costing, operating
+expenses, monthly profit, loss carry-forward, reports, and owner APIs. Confirmed defects were
+fixed with regression tests; existing behavior was preserved.
+
+Defects found and fixed:
+
+- Ordered finalization: `finalize_monthly_profit` now refuses to finalize a month while an
+  earlier `MonthlyProfitPeriod` is still DRAFT, so skip months cannot silently drop their
+  losses from the accumulated balance. Reopening a finalized month refreshes draft successor
+  balances via `_refresh_draft_successors`.
+- COGS source integrity: reopening a costing period is blocked while a later finalized profit
+  period uses it as a `MonthlyProfitCOGSLine.source_period`. Finalizing profit detaches draft
+  source links before replacing entries, so finalized COGS rows stay frozen.
+- Finalized costing months: `finalize_costing_period` recalculates a stale draft under the row
+  lock when real production-order detail exists. New material issues, production results, and
+  material-issue reversals are rejected when the movement month's costing period is FINALIZED.
+- Duplicate expense submissions: the staff expense form posts an idempotency token stored as
+  `submission_key`; a pre-check plus a unique constraint (migration
+  `costing.0009_expense_submission_and_profit_year_constraints`) turns duplicate resubmissions
+  into a user-side validation error instead of a second real expense. The same migration adds
+  a database-level check that monthly profit year/month values are sane.
+- Unit validation: `to_base_quantity` rejects inactive measurement units before computing a
+  base quantity for any movement.
+- Concurrency: the first monthly-profit calculation for a month now uses
+  `get_or_create` under `select_for_update` so two concurrent calculations cannot race to
+  create the same period row.
+
+### Prompt 9 verification
+
+- Focused suite `costing.tests_profit costing.tests manufacturing.tests inventory.tests`
+  with `--keepdb`: 114 tests, zero failures. Full PostgreSQL suite
+  `manage.py test --keepdb`: 253 tests, zero failures and zero skips. The verified target was
+  `DB_ENGINE=postgres`, `DB_NAME=test_paper_factory`, `DB_USER=paper_factory_app`; the
+  production database `paper_factory` was never connected to or modified. Migrations
+  `costing.0007` through `costing.0009` are applied only to `test_paper_factory`; no
+  production migration was run.
+- `manage.py check`, `makemigrations --check --dry-run`, `manage.py spectacular --validate
+  --fail-on-warn`, and `git diff --check` all passed.
+
+Known limitations and accepted risks (not fixed, by design or deferred policy decisions):
+
+- Period-open checks before movement writes are check-then-act; a concurrent finalization can
+  still slip a dated movement into a month that finalizes moments later. The movement remains
+  ledger-visible, and reopening the period recalculates the month.
+- `MaterialIssue`, `FinishedGoodsReceipt`, `ProductionResult`, and `ProductionOrder` lack the
+  ORM update/delete guards and database triggers the stock ledger has; direct ORM or SQL
+  writes by trusted staff could still change costing inputs. Preventing this was deferred as
+  a hardening decision, not a user-facing defect.
+- `Product`/`StorageLocation` identity-stability and unit-dimension rules are enforced in
+  model `clean()` (forms) only; raw queryset updates can bypass them.
+- Cancelling a production order deliberately keeps issued materials and finished-goods
+  receipts for audit instead of forced reversal; the costing model later counts those issues
+  in the month issued.
+- The web form token protects staff double-submission; the public API is read-only for
+  mutations of financial data, so no API idempotency key was added.
 
 ## Remaining decisions and deployment work
 
@@ -183,4 +331,4 @@ Implemented in this checkout:
 - If a Flutter web build is introduced, add an explicit CORS policy for the chosen frontend origins; native mobile clients do not require CORS.
 - Use a current supported Python 3.12 patch for deployment and rerun checks.
 
-The revised phase order remains: Prompt 0 foundation (closed) → Prompt 1 shared catalog/inventory (implemented) → Prompt 2 configurable manufacturing for both lines → shared accounting → purchasing (implemented) → sales (implemented) → Prompt 6 secure mobile API and owner dashboard data (implemented) → Prompt 7 consolidated and line-level reporting → Prompt 8 cross-cutting deployment controls. See [PROMPT_SPECS.md](PROMPT_SPECS.md).
+The revised phase order remains: Prompt 0 foundation (closed) → Prompt 1 shared catalog/inventory (implemented) → Prompt 2 configurable manufacturing for both lines → shared accounting → purchasing (implemented) → sales (implemented) → Prompt 6 secure mobile API and owner dashboard data (implemented) → Prompt 7 consolidated and line-level reporting (implemented) → Prompt 8 monthly profit, operating expenses, and loss carry-forward (implemented). Cross-cutting deployment controls remain future work. See [PROMPT_SPECS.md](PROMPT_SPECS.md).

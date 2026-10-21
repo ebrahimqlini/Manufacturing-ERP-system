@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}تقرير التكاليف المجمع{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="h3 mb-0">تقرير التكاليف المجمع</h1><p class="text-muted small mb-0">قراءة النتائج المحفوظة فقط، مع فحص حسابي للاتساق ودون إعادة احتساب تكلفة الوحدة.</p></div>
+</div>
+{% include "reports/_filters.html" %}
+{% include "reports/_tabs.html" %}
+
+<div class="alert alert-warning small">
+  التكلفة المعروضة تشغيلية ومؤقتة إلى أن يعتمد المالك/المحاسب طريقة التقييم. لا توجد أرباح محاسبية. المبالغ الاحتياطية/التوزيع بالتساوي تُشار إليها بحالة <span class="ltr">INCOMPLETE</span> ولا يُخترع لها مبلغ كمي منفصل غير محفوظ.
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">فترات في الفترة</span><strong class="fs-4">{{ costing.periods_count }}</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">فترات غير مكتملة</span><strong class="fs-4">{{ costing.review_summary.incomplete_periods }}</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">بنود تحتاج مراجعة</span><strong class="fs-4">{{ costing.review_summary.incomplete_entries }}</strong></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">فترات تنقصها الكهرباء/المياه</span><strong class="fs-4">{{ costing.review_summary.missing_electricity_periods }} / {{ costing.review_summary.missing_water_periods }}</strong></div></div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">فترات التكاليف</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الفترة</th><th>الحالة</th><th>اكتمال البيانات</th><th>المواد الفعلية</th><th>محمّل على الجيد</th><th>هالك منفصل</th><th>إجمالي التكلفة</th><th>الفحص الحسابي</th><th>تفاصيل</th></tr></thead>
+    <tbody>{% for row in costing.periods %}
+      <tr>
+        <td class="ltr">{{ row.year }}/{{ row.month|stringformat:"02d" }}</td>
+        <td>{% if row.is_finalized %}<span class="badge bg-success">معتمد</span>{% else %}<span class="badge bg-warning text-dark">مسودة</span>{% endif %}</td>
+        <td>{% if row.is_complete %}<span class="badge bg-success">مكتمل</span>{% else %}<span class="badge bg-danger">ناقص</span>{% endif %}</td>
+        <td class="ltr">{{ row.actual_material_cost }}</td>
+        <td class="ltr">{{ row.material_cost_assigned_to_good }}</td>
+        <td class="ltr">{{ row.waste_material_cost }}</td>
+        <td class="ltr">{{ row.total_production_cost }}</td>
+        <td>{% if row.reconciliation.materials_reconcile and row.reconciliation.cost_total_reconciles %}<span class="badge bg-success">متسق</span>{% else %}<span class="badge bg-danger">اختلاف</span>{% endif %}</td>
+        <td><a class="btn btn-sm btn-outline-primary" href="{% url 'costing:period_detail' row.period_id %}">فتح</a></td>
+      </tr>
+      {% if row.missing_required_expenses %}<tr><td colspan="9" class="small text-danger">نواقص مطلوبة: {{ row.missing_required_expenses|join:"، " }} — {{ row.missing_data_notes }}</td></tr>{% endif %}
+    {% empty %}<tr><td colspan="9" class="text-muted">لا توجد فترات تكاليف محفوظة في الفترة المحددة.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ costing.source }} {{ costing.review_summary.incomplete_entries }} بندًا غير مكتمل عبر الفترات.</p>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">تفصيل الفترة الأحدث</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>المنتج</th><th>الخط</th><th>جيد</th><th>هالك</th><th>مواد فعلية</th><th>محمّل على الجيد</th><th>هالك منفصل</th><th>عمالة</th><th>كهرباء</th><th>مياه</th><th>أخرى</th><th>الإجمالي</th><th>تكلفة الوحدة</th><th>الحالة</th></tr></thead>
+    <tbody>{% for entry in costing.latest_period_entries %}
+      <tr><td>{{ entry.product_sku }} — {{ entry.product_name_ar }}</td><td>{{ entry.production_line|default:"—" }}</td><td class="ltr">{{ entry.good_units_produced }} {{ entry.base_uom }}</td><td class="ltr">{{ entry.scrap_units_produced }} {{ entry.base_uom }}</td><td class="ltr">{{ entry.actual_material_cost }}</td><td class="ltr">{{ entry.material_cost_assigned_to_good }}</td><td class="ltr">{{ entry.waste_material_cost }}</td><td class="ltr">{{ entry.allocated_labor_cost }}</td><td class="ltr">{{ entry.allocated_electricity_cost }}</td><td class="ltr">{{ entry.allocated_water_cost }}</td><td class="ltr">{{ entry.allocated_other_cost }}</td><td class="ltr">{{ entry.total_production_cost }}</td><td class="ltr">{{ entry.cost_per_good_unit|default:"—" }}</td><td>{% if entry.calculation_status == 'COMPLETE' %}<span class="badge bg-success">مكتمل</span>{% else %}<span class="badge bg-warning text-dark">مراجعة</span>{% endif %}</td></tr>
+    {% empty %}<tr><td colspan="14" class="text-muted">لا توجد بنود تكلفة محفوظة.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أوامر الإنتاج في الفترة الأحدث</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>الأمر</th><th>المنتج</th><th>الإجمالي</th><th>تكلفة الوحدة</th><th>الحالة</th></tr></thead><tbody>
+        {% for row in costing.latest_order_entries %}<tr><td class="ltr">{{ row.order_number }}</td><td>{{ row.product_sku }}</td><td class="ltr">{{ row.total_production_cost }}</td><td class="ltr">{{ row.cost_per_good_unit|default:"—" }}</td><td>{{ row.calculation_status }}</td></tr>
+        {% empty %}<tr><td colspan="5" class="text-muted">لا توجد بنود أوامر.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">ملاحظات الاتساق</h2>
+      <p class="small mb-2">{{ costing.allocation_review.reconciliation_basis }}</p>
+      <p class="small mb-2">{{ costing.allocation_review.note }}</p>
+      <p class="small text-muted mb-0">حدود المبلغ الاحتياطي: {{ costing.allocation_review.fallback_amount_available|yesno:"متاح,غير متاح" }}. {{ costing.periods.0.fallback_allocation_note|default:"" }}</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

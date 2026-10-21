@@ -3,6 +3,8 @@ from django.contrib import admin
 from .models import (
     CostingPeriod,
     MonthlyExpense,
+    MonthlyProfitCOGSLine,
+    MonthlyProfitPeriod,
     ProductCostingEntry,
     ProductSellingPrice,
     RawMaterialPrice,
@@ -26,9 +28,31 @@ class RollYieldStandardAdmin(admin.ModelAdmin):
 
 @admin.register(MonthlyExpense)
 class MonthlyExpenseAdmin(admin.ModelAdmin):
-    list_display = ("year", "month", "expense_type", "scope", "amount", "description", "production_line", "product")
-    list_filter = ("year", "month", "expense_type", "scope")
-    search_fields = ("description",)
+    list_display = (
+        "year",
+        "month",
+        "expense_type",
+        "scope",
+        "amount",
+        "status",
+        "expense_date",
+        "payment_date",
+        "description",
+        "production_line",
+        "product",
+    )
+    list_filter = ("year", "month", "expense_type", "scope", "status")
+    search_fields = ("description", "reference")
+    readonly_fields = (
+        "status",
+        "reversed_at",
+        "reversed_by",
+        "reversal_reason",
+        "created_by",
+        "updated_by",
+        "created_at",
+        "updated_at",
+    )
 
 
 class ProductCostingEntryInline(admin.TabularInline):
@@ -46,6 +70,7 @@ class ProductCostingEntryInline(admin.TabularInline):
         "allocated_other_cost",
         "total_production_cost",
         "cost_per_good_unit",
+        "material_cost_per_good_unit",
         "calculation_status",
     )
 
@@ -92,3 +117,50 @@ class CostingPeriodAdmin(admin.ModelAdmin):
 class ProductSellingPriceAdmin(admin.ModelAdmin):
     list_display = ("product", "selling_price", "unit", "updated_at", "updated_by")
     search_fields = ("product__sku", "product__name_ar")
+
+
+class MonthlyProfitCOGSLineInline(admin.TabularInline):
+    model = MonthlyProfitCOGSLine
+    extra = 0
+    can_delete = False
+    readonly_fields = (
+        "product",
+        "quantity_sold_base",
+        "base_uom_code",
+        "base_uom_name_ar",
+        "revenue",
+        "cost_per_base_unit",
+        "cogs",
+        "shipment_count",
+        "source_costing_entry",
+        "source_period",
+        "calculation_status",
+        "shipment_references",
+        "notes",
+    )
+
+
+@admin.register(MonthlyProfitPeriod)
+class MonthlyProfitPeriodAdmin(admin.ModelAdmin):
+    list_display = (
+        "year",
+        "month",
+        "status",
+        "revenue",
+        "cogs",
+        "gross_profit",
+        "operating_expenses_total",
+        "monthly_result",
+        "closing_accumulated_loss",
+        "profit_after_loss_recovery",
+        "is_complete",
+    )
+    list_filter = ("status", "year", "is_complete")
+    readonly_fields = [field.name for field in MonthlyProfitPeriod._meta.fields]
+    inlines = [MonthlyProfitCOGSLineInline]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(obj and obj.status != MonthlyProfitPeriod.Status.FINALIZED)

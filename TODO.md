@@ -88,13 +88,44 @@
 - [x] Add a dedicated token response schema and validate the OpenAPI schema.
 - [x] Ran focused tests, full PostgreSQL suite with `--keepdb` (204 tests, zero skips), `manage.py check`, `makemigrations --check --dry-run`, schema validation, and `git diff --check`; no commit or push.
 
+## Prompt 7 — consolidated and line-level reporting (implemented; verification in IMPLEMENTATION_STATUS.md)
+
+- [x] Add a read-only `reports` service layer and staff-only Arabic RTL report pages for overview, sales, purchasing, inventory, production, and costing.
+- [x] Reuse the existing owner API endpoints and add paginated owner detail endpoints instead of creating a parallel dashboard API.
+- [x] Cover sales, purchasing, inventory movements, production status/plan/consumption/output/yield, persisted costing, customer/supplier totals, recent activity, and data-quality warnings.
+- [x] Keep commercial order value, shipment/receipt value, and recognized revenue distinct; label values as non-accounting and return no invented profit, receivables, payables, or cash.
+- [x] Exclude cancelled orders and reversed lines from active totals, report cancellation/reversal counts separately, and avoid double counting partial reversals.
+- [x] Use `Decimal` money/quantity formatting, preserve currency precision, label base units, and never sum incompatible UOM dimensions.
+- [x] Read product costs from persisted costing outputs only; expose missing utilities, incomplete entries, fallback review, and explicit-zero completeness without recalculating costs.
+- [x] Add production-line filtering for production data and state that shared sales/purchasing/inventory ledgers are never duplicated or artificially allocated per line.
+- [x] Reconcile consolidated production output to attributed line totals with an explicit unallocated check.
+- [x] Add reconciliation tests for sales, purchasing, inventory, production, costing, API authorization/filtering/pagination, reversals, units, and missing/incomplete data.
+- [x] Document dates, included/excluded statuses, source models, completeness, units, and authoritative/estimate status in the reports and API.
+- [x] Keep report responses request-time fresh with no caching, WebSockets, or push notifications.
+- [x] Ran focused and full PostgreSQL tests with `--keepdb`, `manage.py check`, `makemigrations --check --dry-run`, OpenAPI validation, and `git diff --check`; no commit, stage, or push.
+- [ ] Future accounting work: shared accounting journals, invoices, returns/credit notes, payments, tax, receivables, payables, cash, WIP balances, and historical as-of-date stock.
+
+## Prompt 8 — monthly profit, operating expenses, and loss carry-forward (implemented; verification in IMPLEMENTATION_STATUS.md)
+
+- [x] Persist monthly management profit, COGS detail, operating-expense categories, result before loss recovery, opening/closing accumulated loss, loss recovered, and remaining profit.
+- [x] Calculate COGS only for shipped quantities from persisted direct-material unit costs; keep unsold inventory out of expense and avoid deducting labor/electricity/maintenance/other both in product cost and again in COGS.
+- [x] Add maintenance expense category, expense/payment dates, reference, active/reversed status, reversal audit fields, and creator/updater audit fields.
+- [x] Require explicit labor, electricity, maintenance, and other expense records before finalization; keep missing categories distinct from confirmed `0.00`; exclude water from the agreed profit calculation.
+- [x] Carry accumulated losses across months and year boundaries without reset and without recording carried losses as new expenses.
+- [x] Block duplicate finalization, block older finalization/reopen while a later month is finalized, require an audit reason to reopen, and recalculate draft successors.
+- [x] Protect finalized months from expense edits, costing recalculation/reopen, and deletion; preserve expense history through audited reversal.
+- [x] Add staff profit pages, an expense-reversal page, a staff profit report with data-quality warnings, dashboard data, and a read-only owner `/api/v1/owner/profit/` endpoint.
+- [x] Test the required `−20,000`/`+35,000` recovery scenario, partial recovery, consecutive losses, zero results, year-boundary carry-forward, missing-vs-zero expenses, cross-period expenses, unsold/partial/credit sales, reversals, duplicate expenses, labor double-counting, decimals, permissions, finalized protection, corrections, incomplete costing, multiple lines, reports, and API exposure on PostgreSQL.
+- [x] Ran the full PostgreSQL suite with `--keepdb`, `manage.py check`, `makemigrations --check --dry-run`, OpenAPI validation, and `git diff --check`; no commit, stage, or push.
+
 ## Later prompts
 
 - [ ] Shared accounting foundation with consolidated and production-line cost dimensions (originally labelled "Prompt 3"; the production-costing work above is the separate costing prompt).
 - [x] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger (implemented; see the section above). Supplier invoices, payments, tax, and accounting postings remain deferred to the accounting phase.
 - [x] Prompt 5: shared customer/sales/delivery workflows against the common inventory interface (implemented; see the section above). Customer invoices, returns, payments, tax, and accounting postings remain deferred to the accounting phase.
-- [x] Prompt 6: versioned mobile API foundation and owner dashboard data (implemented; see the section above). Reporting is not implemented by this API phase.
-- [ ] Prompt 7: read-only factory-wide and production-line reports, with reconciled consolidated totals.
-- [ ] Prompt 8: approved authorization matrix, audit review, backups/restore, monitoring, and deployment hardening.
+- [x] Prompt 6: versioned mobile API foundation and owner dashboard data (implemented; see the section above). Consolidated reporting was implemented separately in Prompt 7.
+- [x] Prompt 7: read-only factory-wide and production-line reports, with reconciled consolidated totals (implemented; see the section above).
+- [x] Prompt 8: monthly management profit, operating expenses, and loss carry-forward (implemented; see the section above).
+- [ ] Future deployment work: approved authorization matrix, backup/restore automation, monitoring, and deployment hardening.
 
 See [PROMPT_SPECS.md](PROMPT_SPECS.md) for scope, acceptance gates, and required tests for every planned prompt. See [DECISIONS.md](DECISIONS.md) for architecture and unresolved factory/accounting policies.

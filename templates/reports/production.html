@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}تقرير الإنتاج المجمع{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div><h1 class="h3 mb-0">تقرير الإنتاج المجمع</h1><p class="text-muted small mb-0">حالات الأوامر والكميات المخططة والاستهلاك الفعلي والإنتاج الجيد والهالك.</p></div>
+</div>
+{% include "reports/_filters.html" %}
+{% include "reports/_tabs.html" %}
+
+<div class="alert alert-secondary small">
+  <strong>أساس التواريخ:</strong> الحالات والخطط حسب تاريخ إنشاء أمر الإنتاج، الاستهلاك حسب تاريخ حركة الصرف، والإنتاج حسب تاريخ نتيجة الإنتاج. قد تختلف هذه الفترات، ويُعرض عدد نتائج الإنتاج لأوامر أُنشئت قبل الفترة: <strong>{{ production.cross_period_output_count }}</strong>.
+</div>
+{% if production.line_filter.is_filtered %}
+<div class="alert alert-info small">
+  <strong>تصفية خط الإنتاج:</strong> <span class="ltr">{{ production.line_filter.production_line }}</span>.
+  {{ production.line_filter.basis }}
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">أوامر أُنشئت في الفترة</span><strong class="fs-4">{{ production.orders_total }}</strong><span class="small text-muted">ملغاة: {{ production.cancelled_orders_count }}</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">أوامر مفتوحة حاليًا</span><strong class="fs-4">{{ production.open_orders_count }}</strong><span class="small text-muted">مسودة / مطلق / قيد التنفيذ</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">بلا نتيجة إنتاج</span><strong class="fs-4">{{ production.orders_without_results_count }}</strong><span class="small text-muted">من أوامر الفترة غير الملغاة</span></div></div>
+  <div class="col-md-3"><div class="card card-body"><span class="text-muted small">أبعاد وحدات الناتج</span><strong class="fs-4">{{ production.total_output_by_uom|length }}</strong><span class="small text-muted">وحدات أساسية منفصلة لا تُجمع معًا</span></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-6"><div class="card card-body shadow-sm h-100"><h2 class="h5">إجمالي الناتج حسب الوحدة الأساسية</h2><table class="table table-sm mb-0"><thead><tr><th>الوحدة</th><th>الكمية</th></tr></thead><tbody>{% for row in production.total_output_by_uom %}<tr><td>{{ row.base_uom_name_ar }} <span class="text-muted ltr">({{ row.base_uom }})</span></td><td class="ltr">{{ row.quantity_base }}</td></tr>{% empty %}<tr><td colspan="2" class="text-muted">لا توجد نتائج إنتاج.</td></tr>{% endfor %}</tbody></table></div></div>
+  <div class="col-lg-6"><div class="card card-body shadow-sm h-100"><h2 class="h5">إجمالي الاستهلاك حسب الوحدة الأساسية</h2><table class="table table-sm mb-0"><thead><tr><th>الوحدة</th><th>الكمية</th></tr></thead><tbody>{% for row in production.total_consumption_by_uom %}<tr><td>{{ row.base_uom_name_ar }} <span class="text-muted ltr">({{ row.base_uom }})</span></td><td class="ltr">{{ row.quantity_base }}</td></tr>{% empty %}<tr><td colspan="2" class="text-muted">لا يوجد استهلاك.</td></tr>{% endfor %}</tbody></table></div></div>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">خطوط الإنتاج</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الخط</th><th>الأوامر</th><th>الحالات</th><th>الناتج الجيد/الهالك</th><th>الخطة</th><th>الاستهلاك</th></tr></thead>
+    <tbody>{% for line in production.lines %}
+      <tr><td>{{ line.code }} — {{ line.name_ar }}{% if not line.active %} <span class="badge bg-secondary">غير نشط</span>{% endif %}</td><td class="ltr">{{ line.total_orders }}</td><td class="small">{% for row in line.status_counts.items %}{{ row.0 }}: <span class="ltr">{{ row.1 }}</span>{% if not forloop.last %}<br>{% endif %}{% empty %}—{% endfor %}</td><td class="small">{% for row in line.output %}<span class="d-block">{{ row.good_quantity_base }} جيد / {{ row.scrap_quantity_base }} هالك {{ row.base_uom_name_ar }}</span>{% empty %}—{% endfor %}</td><td class="small">{% for row in line.planned_quantities %}<span class="d-block ltr">{{ row.planned_quantity_base }} {{ row.base_uom }}</span>{% empty %}—{% endfor %}</td><td class="small">{% for row in line.consumption %}<span class="d-block">{{ row.sku }}: <span class="ltr">{{ row.quantity_base }} {{ row.base_uom }}</span></span>{% empty %}—{% endfor %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ production.output_basis }}</p>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">مطابقة الناتج المجمع مع خطوط الإنتاج</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الوحدة الأساسية</th><th>جيد</th><th>هالك</th><th>الإجمالي</th><th>الموزع على الخطوط</th><th>غير موزع</th></tr></thead>
+    <tbody>{% for row in production.reconciliation.output_by_uom %}
+      <tr><td>{{ row.base_uom_name_ar }} <span class="text-muted ltr">({{ row.base_uom }})</span></td><td class="ltr">{{ row.good_quantity_base }}</td><td class="ltr">{{ row.scrap_quantity_base }}</td><td class="ltr">{{ row.total_quantity_base }}</td><td class="ltr">{{ row.attributed_to_lines_base }}</td><td class="ltr">{{ row.unallocated_base }}</td></tr>
+    {% empty %}<tr><td colspan="6" class="text-muted">لا توجد نتائج إنتاج لمطابقتها.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ production.reconciliation.unallocated_output_note }} {{ production.reconciliation.shared_inventory_note }}</p>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">العائد حسب المنتج</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>الخط</th><th>المنتج</th><th>جيد</th><th>هالك</th><th>العائد</th></tr></thead><tbody>
+        {% for row in production.yield_rows %}<tr><td>{{ row.production_line }}</td><td>{{ row.sku }} — {{ row.product_name }}</td><td class="ltr">{{ row.good_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.scrap_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.yield_percent }}%</td></tr>
+        {% empty %}<tr><td colspan="5" class="text-muted">لا توجد نتائج إنتاج.</td></tr>{% endfor %}
+      </tbody></table></div>
+      <p class="small text-muted mb-0">{{ production.yield_formula }} {{ production.yield_basis }}</p>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm h-100">
+      <h2 class="h5">أحدث نتائج الإنتاج</h2>
+      <div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>الأمر</th><th>المنتج</th><th>جيد</th><th>هالك</th><th>التاريخ</th></tr></thead><tbody>
+        {% for row in production.recent_results %}<tr><td class="ltr">{{ row.order_number }}</td><td>{{ row.sku }}</td><td class="ltr">{{ row.good_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.scrap_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.occurred_at|date:"Y-m-d H:i" }}</td></tr>
+        {% empty %}<tr><td colspan="5" class="text-muted">لا توجد نتائج.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<div class="card card-body shadow-sm">
+  <h2 class="h5">أحدث أوامر الإنتاج المنشأة في الفترة</h2>
+  <div class="table-responsive"><table class="table table-sm mb-0">
+    <thead><tr><th>الأمر</th><th>المنتج</th><th>الخط</th><th>الحالة</th><th>المخطط</th><th>تاريخ الإنشاء</th></tr></thead>
+    <tbody>{% for row in production.recent_orders %}
+      <tr><td><bdi class="ltr">{{ row.order_number }}</bdi></td><td>{{ row.sku }} — {{ row.product_name }}</td><td>{{ row.production_line }}</td><td>{{ row.status_display }}</td><td class="ltr">{{ row.planned_quantity_base }} {{ row.base_uom }}</td><td class="ltr">{{ row.created_at|date:"Y-m-d H:i" }}</td></tr>
+    {% empty %}<tr><td colspan="6" class="text-muted">لا توجد أوامر.</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="small text-muted mb-0 mt-2">{{ production.planned_basis }} {{ production.consumption_basis }}</p>
+</div>
+{% endblock %}

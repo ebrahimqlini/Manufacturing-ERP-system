@@ -1,12 +1,16 @@
+from datetime import timedelta
 from decimal import Decimal
 
+from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from catalog.models import Product, UnitOfMeasure
-from costing.models import ProductSellingPrice
+from costing.models import CostingPeriod, ProductSellingPrice
+from inventory.models import StockMovement
 from inventory.services import to_base_quantity
+from manufacturing.models import ProductionOrder
 from purchasing.models import PurchaseOrder
 from sales.models import Customer, SalesOrder, SalesOrderLine, Shipment
 
@@ -185,11 +189,11 @@ class CustomerOrderListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     @extend_schema_field(OpenApiTypes.STR)
-    def get_ordered_value(self, obj):
+    def get_ordered_value(self, obj) -> str:
         return format_decimal(obj.ordered_value, 2)
 
     @extend_schema_field(OpenApiTypes.STR)
-    def get_shipped_value(self, obj):
+    def get_shipped_value(self, obj) -> str:
         return format_decimal(obj.shipped_value, 2)
 
     @extend_schema_field(OpenApiTypes.STR)
@@ -197,7 +201,7 @@ class CustomerOrderListSerializer(serializers.ModelSerializer):
         return obj.shipment_state_label
 
     @extend_schema_field(OpenApiTypes.STR)
-    def get_pricing_status(self, obj):
+    def get_pricing_status(self, obj) -> str:
         return obj.pricing_status
 
 
@@ -267,7 +271,7 @@ class OwnerRecentSalesOrderSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
-    def get_ordered_value(self, obj):
+    def get_ordered_value(self, obj) -> str:
         return format_decimal(obj.ordered_value, 2)
 
 
@@ -286,7 +290,7 @@ class OwnerRecentPurchaseOrderSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
-    def get_ordered_value(self, obj):
+    def get_ordered_value(self, obj) -> str:
         return format_decimal(obj.ordered_value, 2)
 
 
@@ -325,6 +329,9 @@ class DashboardQuerySerializer(serializers.Serializer):
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False)
     recent_limit = serializers.IntegerField(min_value=1, max_value=20, required=False, default=5)
+    dimension_limit = serializers.IntegerField(
+        min_value=1, max_value=100, required=False, default=20
+    )
     granularity = serializers.ChoiceField(choices=("day", "month"), required=False)
 
     def validate(self, attrs):
@@ -337,6 +344,13 @@ class DashboardQuerySerializer(serializers.Serializer):
                 raise serializers.ValidationError("تاريخ النهاية يسبق تاريخ البداية.")
             if (end - start).days > 366:
                 raise serializers.ValidationError("الحد الأقصى للفترة هو 366 يومًا.")
+        else:
+            end = timezone.localdate()
+            start = end - timedelta(days=29)
+        if attrs.get("granularity") is None:
+            attrs["granularity"] = "month" if (end - start).days > 90 else "day"
+        attrs["start_date"] = start
+        attrs["end_date"] = end
         return attrs
 
 
@@ -347,11 +361,280 @@ class DashboardResponseSerializer(serializers.Serializer):
     purchases = serializers.DictField()
     inventory = serializers.DictField()
     low_stock_alerts = serializers.ListField(child=serializers.DictField())
+    inventory_movements = serializers.DictField(required=False)
     production = serializers.DictField()
     recent = serializers.DictField()
     customers = serializers.DictField()
     suppliers = serializers.DictField()
     costing = serializers.DictField()
+    profit_loss = serializers.DictField()
     operational_alerts = serializers.ListField(child=serializers.DictField())
+    data_quality = serializers.ListField(child=serializers.DictField(), required=False)
     financial_integrity = serializers.DictField()
     data_sources = serializers.DictField()
+
+
+class OwnerSalesOrderQuerySerializer(DashboardQuerySerializer):
+    status = serializers.ChoiceField(choices=SalesOrder.Status.choices, required=False)
+    customer = serializers.IntegerField(min_value=1, required=False)
+    customer_submitted = serializers.BooleanField(required=False)
+
+
+class OwnerPurchaseOrderQuerySerializer(DashboardQuerySerializer):
+    status = serializers.ChoiceField(choices=PurchaseOrder.Status.choices, required=False)
+    supplier = serializers.IntegerField(min_value=1, required=False)
+
+
+class OwnerMovementQuerySerializer(DashboardQuerySerializer):
+    movement_type = serializers.ChoiceField(
+        choices=StockMovement.Type.choices, required=False
+    )
+    product = serializers.IntegerField(min_value=1, required=False)
+
+
+class OwnerProductionOrderQuerySerializer(DashboardQuerySerializer):
+    status = serializers.ChoiceField(
+        choices=ProductionOrder.Status.choices, required=False
+    )
+    production_line = serializers.CharField(required=False, max_length=50)
+
+
+class OwnerCostingPeriodQuerySerializer(DashboardQuerySerializer):
+    status = serializers.ChoiceField(
+        choices=CostingPeriod.Status.choices, required=False
+    )
+
+
+class OwnerSalesOrderDetailSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name_ar", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    ordered_value = serializers.SerializerMethodField()
+    shipped_value = serializers.SerializerMethodField()
+    ordered_quantity_base = serializers.SerializerMethodField()
+    shipped_quantity_base = serializers.SerializerMethodField()
+    outstanding_quantity_base = serializers.SerializerMethodField()
+    shipment_state = serializers.SerializerMethodField()
+    pricing_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesOrder
+        fields = (
+            "order_number", "customer_code", "customer_name", "order_date",
+            "requested_delivery_date", "customer_reference", "status",
+            "status_display", "ordered_value", "shipped_value",
+            "ordered_quantity_base", "shipped_quantity_base",
+            "outstanding_quantity_base", "shipment_state", "customer_submitted",
+            "pricing_status", "created_at",
+        )
+        read_only_fields = fields
+
+    def _ordered_base(self, obj):
+        return getattr(obj, "report_ordered_base", obj.ordered_quantity_base)
+
+    def _shipped_base(self, obj):
+        return getattr(obj, "report_shipped_base", obj.shipped_quantity_base)
+
+    def get_ordered_value(self, obj) -> str:
+        return format_decimal(
+            getattr(obj, "report_ordered_value", obj.ordered_value), 2
+        )
+
+    def get_shipped_value(self, obj) -> str:
+        return format_decimal(
+            getattr(obj, "report_shipped_value", obj.shipped_value), 2
+        )
+
+    def get_ordered_quantity_base(self, obj) -> str:
+        return format_decimal(self._ordered_base(obj), 12)
+
+    def get_shipped_quantity_base(self, obj) -> str:
+        return format_decimal(self._shipped_base(obj), 12)
+
+    def get_outstanding_quantity_base(self, obj) -> str:
+        return format_decimal(
+            max(self._ordered_base(obj) - self._shipped_base(obj), Decimal("0")), 12
+        )
+
+    def get_shipment_state(self, obj) -> str:
+        ordered = self._ordered_base(obj)
+        shipped = self._shipped_base(obj)
+        if ordered <= 0 or shipped <= 0:
+            return SalesOrder.ShipmentState.NOT_SHIPPED
+        if shipped < ordered:
+            return SalesOrder.ShipmentState.PARTIALLY_SHIPPED
+        return SalesOrder.ShipmentState.SHIPPED
+
+    def get_pricing_status(self, obj) -> str:
+        return obj.pricing_status
+
+
+class OwnerPurchaseOrderDetailSerializer(serializers.ModelSerializer):
+    supplier_code = serializers.CharField(source="supplier.code", read_only=True)
+    supplier_name = serializers.CharField(source="supplier.name_ar", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    ordered_value = serializers.SerializerMethodField()
+    received_value = serializers.SerializerMethodField()
+    ordered_quantity_base = serializers.SerializerMethodField()
+    received_quantity_base = serializers.SerializerMethodField()
+    outstanding_quantity_base = serializers.SerializerMethodField()
+    receipt_state = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseOrder
+        fields = (
+            "order_number", "supplier_code", "supplier_name", "order_date",
+            "expected_date", "supplier_reference", "status", "status_display",
+            "ordered_value", "received_value", "ordered_quantity_base",
+            "received_quantity_base", "outstanding_quantity_base",
+            "receipt_state", "created_at",
+        )
+        read_only_fields = fields
+
+    def _ordered_base(self, obj):
+        return getattr(obj, "report_ordered_base", obj.ordered_quantity_base)
+
+    def _received_base(self, obj):
+        return getattr(obj, "report_received_base", obj.received_quantity_base)
+
+    def get_ordered_value(self, obj) -> str:
+        return format_decimal(
+            getattr(obj, "report_ordered_value", obj.ordered_value), 2
+        )
+
+    def get_received_value(self, obj) -> str:
+        return format_decimal(
+            getattr(obj, "report_received_value", obj.received_value), 2
+        )
+
+    def get_ordered_quantity_base(self, obj) -> str:
+        return format_decimal(self._ordered_base(obj), 12)
+
+    def get_received_quantity_base(self, obj) -> str:
+        return format_decimal(self._received_base(obj), 12)
+
+    def get_outstanding_quantity_base(self, obj) -> str:
+        return format_decimal(
+            max(self._ordered_base(obj) - self._received_base(obj), Decimal("0")), 12
+        )
+
+    def get_receipt_state(self, obj) -> str:
+        ordered = self._ordered_base(obj)
+        received = self._received_base(obj)
+        if ordered <= 0 or received <= 0:
+            return PurchaseOrder.ReceiptState.NOT_RECEIVED
+        if received < ordered:
+            return PurchaseOrder.ReceiptState.PARTIALLY_RECEIVED
+        return PurchaseOrder.ReceiptState.RECEIVED
+
+
+class OwnerStockMovementSerializer(serializers.ModelSerializer):
+    movement_type_label = serializers.CharField(
+        source="get_movement_type_display", read_only=True
+    )
+    sku = serializers.CharField(source="product.sku", read_only=True)
+    product_name = serializers.CharField(source="product.name_ar", read_only=True)
+    base_uom = serializers.CharField(source="product.base_uom.code", read_only=True)
+    base_uom_name_ar = serializers.CharField(
+        source="product.base_uom.name_ar", read_only=True
+    )
+    unit_code = serializers.CharField(source="unit.code", read_only=True)
+    is_reversal = serializers.SerializerMethodField()
+    reverses_reference = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockMovement
+        fields = (
+            "reference", "movement_type", "movement_type_label", "sku",
+            "product_name", "quantity", "unit_code", "base_quantity", "base_uom",
+            "base_uom_name_ar", "source_location", "destination_location",
+            "occurred_at", "posted_at", "external_reference", "is_reversal",
+            "reverses_reference",
+        )
+        read_only_fields = fields
+
+    def get_is_reversal(self, obj) -> bool:
+        return obj.movement_type == StockMovement.Type.REVERSAL
+
+    def get_reverses_reference(self, obj) -> str | None:
+        return obj.reversal_of.reference if obj.reversal_of_id else None
+
+
+class OwnerStockRowSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    sku = serializers.CharField()
+    name_ar = serializers.CharField()
+    category_code = serializers.CharField()
+    category_name = serializers.CharField()
+    base_uom = serializers.CharField()
+    base_uom_name_ar = serializers.CharField()
+    quantity_base = serializers.CharField()
+    low_stock_threshold = serializers.CharField()
+    below_threshold = serializers.BooleanField()
+    active = serializers.BooleanField()
+
+
+class OwnerProductionOrderSerializer(serializers.ModelSerializer):
+    sku = serializers.CharField(source="product.sku", read_only=True)
+    product_name = serializers.CharField(source="product.name_ar", read_only=True)
+    production_line = serializers.CharField(source="production_line.code", read_only=True)
+    production_line_name = serializers.CharField(
+        source="production_line.name_ar", read_only=True
+    )
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    base_uom = serializers.CharField(source="product.base_uom.code", read_only=True)
+    base_uom_name_ar = serializers.CharField(
+        source="product.base_uom.name_ar", read_only=True
+    )
+    planned_unit_code = serializers.CharField(source="planned_unit.code", read_only=True)
+
+    class Meta:
+        model = ProductionOrder
+        fields = (
+            "order_number", "sku", "product_name", "production_line",
+            "production_line_name", "status", "status_display",
+            "planned_quantity", "planned_unit_code", "planned_quantity_base",
+            "base_uom", "base_uom_name_ar", "created_at", "released_at",
+            "completed_at",
+        )
+        read_only_fields = fields
+
+
+class OwnerCostingPeriodSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    review_required = serializers.SerializerMethodField()
+    missing_required_expenses = serializers.SerializerMethodField()
+    entry_count = serializers.IntegerField(read_only=True)
+    electricity_recorded = serializers.BooleanField(read_only=True)
+    water_recorded = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = CostingPeriod
+        fields = (
+            "id", "year", "month", "start_date", "end_date", "status",
+            "status_label", "is_complete", "labor_recorded",
+            "electricity_recorded", "water_recorded", "labor_total",
+            "electricity_total", "water_total", "other_industrial_total",
+            "materials_total", "total_production_cost", "missing_data_notes",
+            "calculated_at", "finalized_at", "entry_count", "review_required",
+            "missing_required_expenses",
+        )
+        read_only_fields = fields
+
+    def get_review_required(self, obj) -> bool:
+        return bool(
+            not obj.is_complete
+            or not obj.labor_recorded
+            or not obj.electricity_recorded
+            or not obj.water_recorded
+        )
+
+    def get_missing_required_expenses(self, obj) -> list[str]:
+        missing = []
+        if not obj.labor_recorded:
+            missing.append("LABOR")
+        if not obj.electricity_recorded:
+            missing.append("ELECTRICITY")
+        if not obj.water_recorded:
+            missing.append("WATER")
+        return missing

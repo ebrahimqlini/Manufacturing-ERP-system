@@ -28,6 +28,17 @@ def ensure_period_open(year, month, action_label):
         )
 
 
+def ensure_profit_period_open(year, month, action_label):
+    """Reject changes that would invalidate a finalized monthly profit period."""
+    if MonthlyProfitPeriod.objects.filter(
+        year=year, month=month, status=MonthlyProfitPeriod.Status.FINALIZED
+    ).exists():
+        raise ValidationError(
+            f"لا يمكن {action_label} لشهر {year}/{month:02d} بعد اعتماد نتيجة الشهر نهائيًا؛ "
+            "أعد فتح فترة الأرباح والخسائر أولاً."
+        )
+
+
 class RawMaterialPrice(models.Model):
     """Raw material price entered by the owner. Converted to base unit price."""
     material = models.ForeignKey(
@@ -201,6 +212,7 @@ class MonthlyExpenseQuerySet(models.QuerySet):
     def _assert_periods_open(self, action_label):
         for year, month in self.values_list("year", "month").distinct():
             ensure_period_open(year, month, action_label)
+            ensure_profit_period_open(year, month, action_label)
 
     def update(self, **kwargs):
         self._assert_periods_open("تعديل أو إضافة مصاريف")
@@ -209,6 +221,9 @@ class MonthlyExpenseQuerySet(models.QuerySet):
     def delete(self):
         self._assert_periods_open("حذف مصاريف")
         return super().delete()
+
+    def active(self):
+        return self.filter(status=MonthlyExpense.Status.ACTIVE)
 
 
 class MonthlyExpense(models.Model):
@@ -220,12 +235,17 @@ class MonthlyExpense(models.Model):
         LABOR = "LABOR", "مصاريف عمالة"
         ELECTRICITY = "ELECTRICITY", "مصاريف كهرباء"
         WATER = "WATER", "مصاريف مياه"
-        OTHER_INDUSTRIAL = "OTHER_INDUSTRIAL", "مصاريف صناعية أخرى"
+        MAINTENANCE = "MAINTENANCE", "مصاريف صيانة"
+        OTHER_INDUSTRIAL = "OTHER_INDUSTRIAL", "مصاريف تشغيلية أخرى"
 
     class AllocationScope(models.TextChoices):
         FACTORY = "FACTORY", "مشترك للمصنع ككل"
         LINE = "LINE", "خاص بخط إنتاج محدد"
         PRODUCT = "PRODUCT", "خاص بمنتج محدد"
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "ساري"
+        REVERSED = "REVERSED", "معكوس"
 
     year = models.PositiveSmallIntegerField("السنة")
     month = models.PositiveSmallIntegerField(
@@ -272,12 +292,40 @@ class MonthlyExpense(models.Model):
     )
     description = models.CharField("بيان المصروف", max_length=240)
     notes = models.TextField("ملاحظات", blank=True)
+    expense_date = models.DateField("تاريخ المصروف", null=True, blank=True)
+    payment_date = models.DateField("تاريخ السداد", null=True, blank=True)
+    reference = models.CharField("مرجع المصروف", max_length=120, blank=True)
+    status = models.CharField(
+        "حالة المصروف",
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    reversed_at = models.DateTimeField("تاريخ العكس", null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reversed_expenses",
+        verbose_name="عكس بواسطة",
+    )
+    reversal_reason = models.CharField("سبب العكس", max_length=255, blank=True)
     submission_key = models.UUIDField(default=uuid.uuid4, editable=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="created_expenses",
         verbose_name="أنشئ بواسطة",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="updated_expenses",
+        verbose_name="آخر تعديل بواسطة",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -292,6 +340,10 @@ class MonthlyExpense(models.Model):
             models.CheckConstraint(
                 condition=Q(year__gte=2020) & Q(year__lte=2100),
                 name="monthly_expense_year_valid",
+            ),
+            models.UniqueConstraint(
+                fields=["submission_key"],
+                name="unique_monthly_expense_submission",
             ),
         ]
         verbose_name = "مصروف شهري"
@@ -309,19 +361,28 @@ class MonthlyExpense(models.Model):
             errors["product"] = "حدد المنتج عند اختيار نطاق خاص بمنتج محدد."
         elif self.scope != self.AllocationScope.PRODUCT and self.product_id:
             self.product = None
+        if self.expense_date and self.payment_date and self.payment_date < self.expense_date:
+            errors["payment_date"] = "تاريخ السداد لا يسبق تاريخ المصروف."
         if self.year is not None and self.month is not None and 1 <= self.month <= 12:
+            if self.expense_date is None:
+                self.expense_date = date(self.year, self.month, 1)
             # Applies to new and existing rows alike so a finalized month cannot
             # be changed indirectly through creation, editing, or the admin.
             ensure_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
+            ensure_profit_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         ensure_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
+        ensure_profit_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
+        if self.expense_date is None and self.year and self.month:
+            self.expense_date = date(self.year, self.month, 1)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         ensure_period_open(self.year, self.month, "حذف مصاريف")
+        ensure_profit_period_open(self.year, self.month, "حذف مصاريف")
         return super().delete(*args, **kwargs)
 
     def __str__(self):
@@ -402,6 +463,18 @@ class CostingPeriod(models.Model):
         default=False,
         editable=False,
         help_text="يفرّق بين غياب بند العمالة وبين تسجيله صراحة بقيمة 0.00.",
+    )
+    electricity_recorded = models.BooleanField(
+        "تم تسجيل مصاريف الكهرباء",
+        default=False,
+        editable=False,
+        help_text="لقطة وقت الاحتساب تفرّق بين غياب بند الكهرباء وتسجيله صراحة بقيمة 0.00.",
+    )
+    water_recorded = models.BooleanField(
+        "تم تسجيل مصاريف المياه",
+        default=False,
+        editable=False,
+        help_text="لقطة وقت الاحتساب تفرّق بين غياب بند المياه وتسجيله صراحة بقيمة 0.00.",
     )
     labor_total = models.DecimalField("إجمالي مصاريف العمالة", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     electricity_total = models.DecimalField("إجمالي مصاريف الكهرباء", max_digits=18, decimal_places=2, default=Decimal("0.00"))
@@ -598,6 +671,18 @@ class ProductCostingEntry(models.Model):
         null=True,
         blank=True,
     )
+    material_cost_per_good_unit = models.DecimalField(
+        "تكلفة المواد المباشرة للوحدة الجيدة (ج.م)",
+        max_digits=18,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=(
+            "لقطة من تكلفة المواد المحمّلة على الجيد مقسومة على الوحدات الجيدة. "
+            "تُستخدم لتكلفة المبيعات دون إعادة احتساب تكلفة المنتج، ولا تشمل "
+            "العمالة أو الكهرباء أو الصيانة أو المصاريف التشغيلية الأخرى."
+        ),
+    )
     selling_price_snapshot = models.DecimalField(
         "سعر البيع المرجعي (ج.م)",
         max_digits=18,
@@ -717,3 +802,343 @@ class ProductSellingPrice(models.Model):
 
     def __str__(self):
         return f"{self.product.sku}: {self.selling_price} ج.م / {self.unit.code}"
+
+
+class MonthlyProfitPeriodQuerySet(models.QuerySet):
+    """Protect finalized monthly results from bulk edits or deletion."""
+
+    def _assert_unfinalized(self, action_label):
+        if self.filter(status=MonthlyProfitPeriod.Status.FINALIZED).exists():
+            raise ValidationError(
+                f"لا يمكن {action_label} لفترة أرباح وخسائر معتمدة نهائيًا؛ أعد فتحها أولاً."
+            )
+
+    def update(self, **kwargs):
+        self._assert_unfinalized("تعديل")
+        return super().update(**kwargs)
+
+    def delete(self):
+        self._assert_unfinalized("حذف")
+        return super().delete()
+
+
+class MonthlyProfitPeriod(models.Model):
+    """Persisted monthly management profit, operating expenses, and loss carry-forward.
+
+    This is an internally consistent management result, not a general-ledger
+    accounting close. Sales revenue is recognized from active shipment lines;
+    COGS is the persisted direct-material cost of the products actually shipped;
+    operating expenses are recorded period expenses and are never allocated or
+    deducted a second time inside COGS.
+    """
+
+    objects = MonthlyProfitPeriodQuerySet.as_manager()
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "مبدئي / قابل للتعديل"
+        FINALIZED = "FINALIZED", "معتمد نهائيًا"
+
+    year = models.PositiveSmallIntegerField("السنة")
+    month = models.PositiveSmallIntegerField(
+        "الشهر",
+        validators=[MinValueValidator(1), MaxValueValidator(12)],
+    )
+    start_date = models.DateField("بداية الفترة", null=True, blank=True, editable=False)
+    end_date = models.DateField("نهاية الفترة", null=True, blank=True, editable=False)
+    status = models.CharField(
+        "الحالة",
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    costing_period = models.ForeignKey(
+        CostingPeriod,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="profit_periods",
+        verbose_name="فترة التكاليف المرتبطة",
+    )
+
+    revenue = models.DecimalField(
+        "صافي إيراد المبيعات (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    cogs = models.DecimalField(
+        "تكلفة البضاعة المباعة (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    gross_profit = models.DecimalField(
+        "إجمالي الربح (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    labor_expense = models.DecimalField(
+        "مصاريف العمالة (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    electricity_expense = models.DecimalField(
+        "مصاريف الكهرباء (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    maintenance_expense = models.DecimalField(
+        "مصاريف الصيانة (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    other_expense = models.DecimalField(
+        "مصاريف تشغيلية أخرى (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
+    )
+    operating_expenses_total = models.DecimalField(
+        "إجمالي المصاريف التشغيلية (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    monthly_result = models.DecimalField(
+        "نتيجة الشهر قبل تغطية الخسائر (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    opening_accumulated_loss = models.DecimalField(
+        "رصيد الخسائر المتراكمة الافتتاحي (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    loss_recovered = models.DecimalField(
+        "الخسائر السابقة المستردة من نتيجة الشهر (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    closing_accumulated_loss = models.DecimalField(
+        "رصيد الخسائر المتراكمة الختامي (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    profit_after_loss_recovery = models.DecimalField(
+        "الربح المتبقي بعد تغطية الخسائر (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+
+    labor_recorded = models.BooleanField("تم تسجيل مصاريف العمالة", default=False, editable=False)
+    electricity_recorded = models.BooleanField("تم تسجيل مصاريف الكهرباء", default=False, editable=False)
+    maintenance_recorded = models.BooleanField("تم تسجيل مصاريف الصيانة", default=False, editable=False)
+    other_recorded = models.BooleanField("تم تسجيل مصاريف تشغيلية أخرى", default=False, editable=False)
+    cogs_complete = models.BooleanField("تكلفة البضاعة المباعة مكتملة", default=False, editable=False)
+    is_complete = models.BooleanField("البيانات مكتملة", default=False, editable=False)
+    missing_data_notes = models.TextField("ملاحظات البيانات الناقصة", blank=True)
+
+    active_shipment_count = models.PositiveIntegerField("عدد الشحنات النشطة", default=0, editable=False)
+    active_shipment_line_count = models.PositiveIntegerField("عدد بنود الشحن النشطة", default=0, editable=False)
+    revenue_product_count = models.PositiveIntegerField("عدد المنتجات المباعة", default=0, editable=False)
+    expense_record_count = models.PositiveIntegerField("عدد سجلات المصاريف النشطة", default=0, editable=False)
+
+    calculated_at = models.DateTimeField("تاريخ آخر احتساب", null=True, blank=True)
+    calculated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="calculated_profit_periods",
+        verbose_name="احسب بواسطة",
+    )
+    finalized_at = models.DateTimeField("تاريخ الاعتماد", null=True, blank=True)
+    finalized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="finalized_profit_periods",
+        verbose_name="اعتمد بواسطة",
+    )
+    reopened_at = models.DateTimeField("تاريخ إعادة الفتح", null=True, blank=True)
+    reopened_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reopened_profit_periods",
+        verbose_name="أعيد فتحه بواسطة",
+    )
+    reopen_reason = models.CharField("سبب إعادة الفتح", max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-year", "-month"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["year", "month"], name="unique_monthly_profit_period"
+            ),
+            models.CheckConstraint(
+                condition=Q(year__gte=2020) & Q(year__lte=2100),
+                name="monthly_profit_year_valid",
+            ),
+        ]
+        verbose_name = "فترة أرباح وخسائر شهرية"
+        verbose_name_plural = "فترات الأرباح والخسائر الشهرية"
+
+    def save(self, *args, **kwargs):
+        # A finalized row may only move to DRAFT through the audited reopen
+        # service, or from DRAFT to FINALIZED through finalization. Direct
+        # edits to an already-finalized instance are rejected.
+        if self.pk and not self._state.adding:
+            previous_status = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list("status", flat=True)
+                .first()
+            )
+            allowed_reopen = bool(getattr(self, "_allow_reopen_save", False))
+            allowed_finalize = bool(getattr(self, "_allow_finalize_save", False))
+            if previous_status == self.Status.FINALIZED:
+                if self.status == self.Status.FINALIZED or not allowed_reopen:
+                    raise ValidationError(
+                        "لا يمكن تعديل فترة أرباح وخسائر معتمدة نهائيًا مباشرة؛ "
+                        "أعد فتحها ووثّق سبب التصحيح."
+                    )
+            elif self.status == self.Status.FINALIZED and not allowed_finalize:
+                raise ValidationError(
+                    "اعتماد نتيجة الشهر يتم من خدمة الاعتماد المخوّلة فقط."
+                )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        stored_status = (
+            type(self).objects.filter(pk=self.pk)
+            .values_list("status", flat=True)
+            .first()
+            if self.pk
+            else self.status
+        )
+        if self.status == self.Status.FINALIZED or stored_status == self.Status.FINALIZED:
+            raise ValidationError("لا يمكن حذف فترة أرباح وخسائر معتمدة نهائيًا.")
+        return super().delete(*args, **kwargs)
+
+    @property
+    def recovery_state(self):
+        if self.closing_accumulated_loss > 0 and self.monthly_result < 0:
+            return "LOSS_ADDED"
+        if self.loss_recovered > 0 and self.closing_accumulated_loss > 0:
+            return "PARTIAL_RECOVERY"
+        if self.loss_recovered > 0:
+            return "FULL_RECOVERY"
+        if self.closing_accumulated_loss > 0:
+            return "LOSS_CARRIED_FORWARD"
+        return "NO_LOSS"
+
+    def __str__(self):
+        return f"أرباح وخسائر {self.year}/{self.month:02d} ({self.get_status_display()})"
+
+
+class MonthlyProfitCOGSLineQuerySet(models.QuerySet):
+    """Protect COGS detail that belongs to a finalized monthly result."""
+
+    def _assert_open(self):
+        if MonthlyProfitPeriod.objects.filter(
+            pk__in=self.values("profit_period_id"),
+            status=MonthlyProfitPeriod.Status.FINALIZED,
+        ).exists():
+            raise ValidationError(
+                "لا يمكن تعديل أو حذف بنود تكلفة بضاعة تخص فترة أرباح معتمدة نهائيًا."
+            )
+
+    def update(self, **kwargs):
+        self._assert_open()
+        return super().update(**kwargs)
+
+    def delete(self):
+        self._assert_open()
+        return super().delete()
+
+
+class MonthlyProfitCOGSLine(models.Model):
+    """Persisted COGS detail for one product sold inside a monthly profit period."""
+
+    objects = MonthlyProfitCOGSLineQuerySet.as_manager()
+
+    class CalculationStatus(models.TextChoices):
+        COMPLETE = "COMPLETE", "مكتمل"
+        MISSING_COST = "MISSING_COST", "تكلفة غير متاحة"
+        NON_AUTHORITATIVE = "NON_AUTHORITATIVE", "تكلفة غير معتمدة نهائيًا"
+
+    profit_period = models.ForeignKey(
+        MonthlyProfitPeriod,
+        on_delete=models.CASCADE,
+        related_name="cogs_lines",
+        verbose_name="فترة الأرباح والخسائر",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="profit_cogs_lines",
+        verbose_name="المنتج",
+    )
+    quantity_sold_base = models.DecimalField(
+        "الكمية المباعة بالوحدة الأساسية", max_digits=30, decimal_places=12
+    )
+    base_uom_code = models.CharField("رمز الوحدة الأساسية", max_length=40)
+    base_uom_name_ar = models.CharField("اسم الوحدة الأساسية", max_length=120)
+    revenue = models.DecimalField("صافي إيراد المنتج (ج.م)", max_digits=18, decimal_places=2)
+    cost_per_base_unit = models.DecimalField(
+        "تكلفة المواد المباشرة للوحدة الأساسية (ج.م)",
+        max_digits=18,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    cogs = models.DecimalField("تكلفة البضاعة المباعة (ج.م)", max_digits=18, decimal_places=2)
+    shipment_count = models.PositiveIntegerField("عدد الشحنات", default=0)
+    source_costing_entry = models.ForeignKey(
+        ProductCostingEntry,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="profit_cogs_lines",
+        verbose_name="بند التكلفة المصدر",
+    )
+    source_period = models.ForeignKey(
+        CostingPeriod,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="profit_cogs_lines",
+        verbose_name="فترة التكلفة المصدر",
+    )
+    calculation_status = models.CharField(
+        "حالة الاحتساب",
+        max_length=20,
+        choices=CalculationStatus.choices,
+        default=CalculationStatus.COMPLETE,
+    )
+    shipment_references = models.JSONField("مراجع الشحنات", default=list)
+    notes = models.CharField("ملاحظات", max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["product__sku"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["profit_period", "product"],
+                name="unique_profit_cogs_product",
+            ),
+        ]
+        verbose_name = "بند تكلفة بضاعة مباعة"
+        verbose_name_plural = "بنود تكلفة البضاعة المباعة"
+
+    def _ensure_open(self):
+        if self.profit_period_id and MonthlyProfitPeriod.objects.filter(
+            pk=self.profit_period_id,
+            status=MonthlyProfitPeriod.Status.FINALIZED,
+        ).exists():
+            raise ValidationError(
+                "لا يمكن تعديل أو حذف بنود تكلفة بضاعة تخص فترة أرباح معتمدة نهائيًا."
+            )
+
+    def save(self, *args, **kwargs):
+        self._ensure_open()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._ensure_open()
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.profit_period} — {self.product.sku}: {self.cogs} ج.م"

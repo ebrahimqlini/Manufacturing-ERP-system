@@ -20,6 +20,14 @@ urlpatterns = [
     path("expenses/", views.expense_list, name="expense_list"),
     path("expenses/add/", views.expense_create, name="expense_create"),
     path("expenses/<int:pk>/edit/", views.expense_edit, name="expense_edit"),
+    path("expenses/<int:pk>/reverse/", views.expense_reverse, name="expense_reverse"),
+
+    # Monthly Profit, Operating Expenses, and Loss Carry-Forward
+    path("profit/", views.profit_period_list, name="profit_period_list"),
+    path("profit/calculate/", views.profit_period_calculate, name="profit_period_calculate"),
+    path("profit/<int:pk>/", views.profit_period_detail, name="profit_period_detail"),
+    path("profit/<int:pk>/finalize/", views.profit_period_finalize, name="profit_period_finalize"),
+    path("profit/<int:pk>/reopen/", views.profit_period_reopen, name="profit_period_reopen"),
 
     # Raw Material Prices
     path("prices/", views.price_list, name="price_list"),
