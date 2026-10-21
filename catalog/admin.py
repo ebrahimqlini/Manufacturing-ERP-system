@@ -24,8 +24,8 @@ class ProductUnitConversionInline(admin.TabularInline):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ("sku", "name_ar", "category", "base_uom", "active")
+    list_display = ("sku", "name_ar", "category", "base_uom", "active", "available_to_customers", "low_stock_threshold")
     search_fields = ("sku", "name_ar", "name_en")
-    list_filter = ("category", "active")
+    list_filter = ("category", "active", "available_to_customers")
     inlines = (ProductUnitConversionInline,)
     readonly_fields = ("created_at", "updated_at")

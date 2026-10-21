@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 import uuid
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -45,19 +45,24 @@ def _shipped_map(order):
     return {row["order_line_id"]: row["total"] for row in rows}
 
 
-def save_draft_order(*, actor, lines, order=None, **values):
-    """Create or replace a draft sales order and its lines atomically.
+def _create_draft_order(*, actor, lines, order=None, customer_submitted=False, **values):
+    """Shared atomic draft-order writer.
 
-    Only confirmed documents are locked; draft lines may be replaced. A
-    confirmed, completed, or cancelled order is never edited by this service.
+    Callers must enforce their own role policy before using this helper. Staff
+    edits use ``save_draft_order``; customer API requests use
+    ``submit_customer_order_request`` with a fixed customer and zero-price
+    request lines.
     """
-    _staff(actor)
     if not lines:
         raise ValidationError("أضف بندًا واحدًا على الأقل لأمر البيع.")
 
     with transaction.atomic():
         if order is None:
-            order = SalesOrder(created_by=actor, order_number=_sales_order_number())
+            order = SalesOrder(
+                created_by=actor,
+                order_number=_sales_order_number(),
+                customer_submitted=customer_submitted,
+            )
         else:
             order = SalesOrder.objects.select_for_update().get(pk=order.pk)
             if order.status != SalesOrder.Status.DRAFT:
@@ -85,6 +90,88 @@ def save_draft_order(*, actor, lines, order=None, **values):
         return order
 
 
+def save_draft_order(*, actor, lines, order=None, **values):
+    """Create or replace a draft sales order and its lines atomically.
+
+    Only confirmed documents are locked; draft lines may be replaced. A
+    confirmed, completed, or cancelled order is never edited by this service.
+    This staff-facing entry point keeps the existing web permission boundary.
+    """
+    _staff(actor)
+    return _create_draft_order(actor=actor, lines=lines, order=order, **values)
+
+
+CUSTOMER_ORDER_FIELDS = {"requested_delivery_date", "customer_reference", "notes"}
+CUSTOMER_ORDER_LINE_FIELDS = {"product", "quantity", "unit", "notes"}
+
+
+def submit_customer_order_request(*, actor, lines, **values):
+    """Create a customer's draft order request without any stock or sales side effect.
+
+    The authenticated non-staff user must be linked to an active customer. The
+    customer and submitter are never accepted from the request payload. Lines
+    are request quantities only: prices start at zero pending staff review, and
+    the sales service does not confirm, reserve, ship, or issue inventory.
+    """
+    if (
+        not actor
+        or not actor.is_authenticated
+        or not getattr(actor, "is_active", False)
+        or getattr(actor, "is_staff", False)
+    ):
+        raise ValidationError("هذا الإجراء متاح لحسابات العملاء فقط.")
+    try:
+        customer = actor.customer_account
+    except ObjectDoesNotExist as exc:
+        raise ValidationError("لا يوجد حساب عميل مرتبط بهذا المستخدم.") from exc
+    if not customer.active:
+        raise ValidationError("حساب العميل غير نشط.")
+    if not lines:
+        raise ValidationError("أضف بندًا واحدًا على الأقل لطلب أمر البيع.")
+    if len(lines) > 50:
+        raise ValidationError("لا يمكن إرسال أكثر من 50 بندًا في الطلب الواحد.")
+    unexpected = set(values) - CUSTOMER_ORDER_FIELDS
+    if unexpected:
+        raise ValidationError("حقول الطلب غير مسموح بها للعميل.")
+
+    normalized = []
+    for payload in lines:
+        unexpected_line = set(payload) - CUSTOMER_ORDER_LINE_FIELDS
+        if unexpected_line:
+            raise ValidationError("حقول البند غير مسموح بها للعميل.")
+        product = payload.get("product")
+        unit = payload.get("unit")
+        if not product or not unit:
+            raise ValidationError("كل بند يحتاج صنفًا ووحدة.")
+        if not product.active or not product.available_to_customers:
+            raise ValidationError({"product": "الصنف غير متاح لطلبات العملاء."})
+        if not unit.active:
+            raise ValidationError({"unit": "اختر وحدة نشطة."})
+        normalized.append({
+            "product": product,
+            "quantity": payload["quantity"],
+            "unit": unit,
+            "unit_price": Decimal("0"),
+            "notes": payload.get("notes") or "",
+        })
+
+    order_date = date.today()
+    requested_delivery_date = values.get("requested_delivery_date")
+    if requested_delivery_date and requested_delivery_date < order_date:
+        raise ValidationError({"requested_delivery_date": "تاريخ التسليم المطلوب لا يسبق تاريخ الطلب."})
+
+    return _create_draft_order(
+        actor=actor,
+        lines=normalized,
+        customer=customer,
+        order_date=order_date,
+        customer_reference=(values.get("customer_reference") or "").strip(),
+        notes=(values.get("notes") or "").strip(),
+        requested_delivery_date=requested_delivery_date,
+        customer_submitted=True,
+    )
+
+
 def confirm_order(*, order, actor):
     _staff(actor)
     with transaction.atomic():
@@ -98,6 +185,10 @@ def confirm_order(*, order, actor):
         )
         if not lines:
             raise ValidationError("أضف بندًا واحدًا على الأقل قبل تأكيد أمر البيع.")
+        if order.customer_submitted and any(line.unit_price <= 0 for line in lines):
+            raise ValidationError(
+                "لا يمكن تأكيد طلب عميل قبل مراجعة الأسعار وتحديد سعر موجب لكل بند."
+            )
         for line in lines:
             line.full_clean()
         order.status = SalesOrder.Status.CONFIRMED
@@ -197,6 +288,10 @@ def create_shipment(*, order, actor, reference, shipment_date, source_location, 
         order = SalesOrder.objects.select_for_update().select_related("customer").get(pk=order.pk)
         if order.status != SalesOrder.Status.CONFIRMED:
             raise ValidationError("لا يمكن الشحن إلا لأمر بيع مؤكد.")
+        if order.customer_submitted and order.has_unpriced_lines:
+            raise ValidationError(
+                "لا يمكن شحن طلب عميل قبل مراجعة الأسعار وتحديد سعر موجب لكل بند."
+            )
         if not source_location.active or not source_location.warehouse.active:
             raise ValidationError({"source_location": "اختر موقع مخزون نشطًا داخل مخزن نشط."})
         if Shipment.objects.filter(reference=reference).exists():

@@ -836,6 +836,69 @@ class SalesViewAndPermissionTests(SalesFixtureMixin, TestCase):
         response = self.client.get(reverse("sales:order_edit", args=[draft.pk]))
         self.assertEqual(response.status_code, 200)
 
+    def test_customer_submitted_pending_pricing_is_visible_and_confirm_is_hidden(self):
+        order = save_draft_order(
+            actor=self.staff,
+            customer=self.customer,
+            order_date=date(2026, 10, 1),
+            customer_submitted=True,
+            lines=[self.line(unit_price="0")],
+        )
+        self.assertEqual(order.pricing_status, "PENDING_REVIEW")
+        self.client.force_login(self.staff)
+
+        listing = self.client.get(reverse("sales:order_list"))
+        self.assertEqual(listing.status_code, 200)
+        self.assertContains(listing, "طلب عميل")
+        self.assertContains(listing, "بانتظار التسعير")
+
+        detail = self.client.get(reverse("sales:order_detail", args=[order.pk]))
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "طلب عميل")
+        self.assertContains(detail, "بانتظار التسعير")
+        self.assertNotContains(
+            detail,
+            f'action="{reverse("sales:order_confirm", args=[order.pk])}"',
+        )
+
+        # Staff can set valid prices in the existing edit flow; the guard then
+        # permits confirmation and the visible pending state disappears.
+        priced = save_draft_order(
+            actor=self.staff,
+            order=order,
+            lines=[self.line(unit_price="2")],
+        )
+        self.assertEqual(priced.pricing_status, "RECORDED")
+        confirmed = confirm_order(order=priced, actor=self.staff)
+        self.assertEqual(confirmed.status, SalesOrder.Status.CONFIRMED)
+
+    def test_admin_shows_customer_submission_and_pricing_state(self):
+        order = save_draft_order(
+            actor=self.staff,
+            customer=self.customer,
+            order_date=date(2026, 10, 1),
+            customer_submitted=True,
+            lines=[self.line(unit_price="0")],
+        )
+        admin_user = get_user_model().objects.create_superuser(
+            username=f"sales-admin-{uuid.uuid4().hex[:8]}",
+            email="admin@example.invalid",
+            password="test-password",
+        )
+        self.client.force_login(admin_user)
+
+        listing = self.client.get(reverse("admin:sales_salesorder_changelist"))
+        self.assertEqual(listing.status_code, 200)
+        self.assertContains(listing, order.order_number)
+        self.assertContains(listing, "PENDING_REVIEW")
+
+        detail = self.client.get(
+            reverse("admin:sales_salesorder_change", args=[order.pk])
+        )
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "حالة التسعير")
+        self.assertContains(detail, "PENDING_REVIEW")
+
     def test_navigation_link_is_hidden_from_regular_users(self):
         url = reverse("sales:order_list")
         self.client.force_login(self.staff)

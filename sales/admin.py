@@ -5,9 +5,9 @@ from .models import Customer, SalesOrder, SalesOrderLine, Shipment, ShipmentLine
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ("code", "name_ar", "contact_person", "phone", "email", "active")
+    list_display = ("code", "name_ar", "contact_person", "phone", "email", "active", "user")
     list_filter = ("active",)
-    search_fields = ("code", "name_ar", "name_en", "contact_person", "phone", "email")
+    search_fields = ("code", "name_ar", "name_en", "contact_person", "phone", "email", "user__username")
 
 
 class SalesOrderLineInline(admin.TabularInline):
@@ -22,11 +22,18 @@ class SalesOrderLineInline(admin.TabularInline):
 
 @admin.register(SalesOrder)
 class SalesOrderAdmin(admin.ModelAdmin):
-    list_display = ("order_number", "customer", "order_date", "requested_delivery_date", "status", "created_by")
-    list_filter = ("status", "customer")
+    list_display = (
+        "order_number", "customer", "order_date", "requested_delivery_date",
+        "status", "customer_submitted", "pricing_status", "created_by",
+    )
+    list_filter = ("status", "customer", "customer_submitted")
     search_fields = ("order_number", "customer_reference", "customer__code", "customer__name_ar")
-    readonly_fields = tuple(field.name for field in SalesOrder._meta.fields)
+    readonly_fields = tuple(field.name for field in SalesOrder._meta.fields) + ("pricing_status",)
     inlines = [SalesOrderLineInline]
+
+    @admin.display(description="حالة التسعير")
+    def pricing_status(self, obj):
+        return obj.pricing_status
 
     def has_add_permission(self, request):
         return False

@@ -2,7 +2,12 @@
 {% block title %}{{ order.order_number }}{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-  <h1 class="h3 mb-0">أمر بيع <bdi dir="ltr">{{ order.order_number }}</bdi></h1>
+  <h1 class="h3 mb-0">
+    أمر بيع <bdi dir="ltr">{{ order.order_number }}</bdi>
+    {% if order.customer_submitted %}<span class="badge bg-info text-dark">طلب عميل</span>{% endif %}
+    {% if order.pricing_status == 'PENDING_REVIEW' %}<span class="badge bg-warning text-dark">بانتظار التسعير</span>
+    {% elif order.pricing_status == 'UNPRICED' %}<span class="badge bg-danger">أسعار غير مسجلة</span>{% endif %}
+  </h1>
   <div class="d-flex flex-wrap gap-2">
     <a class="btn btn-outline-secondary" href="{% url 'sales:order_list' %}">كل الأوامر</a>
     <a class="btn btn-outline-primary" href="{% url 'sales:customer_detail' order.customer.pk %}">بطاقة العميل</a>
@@ -17,7 +22,12 @@
     <strong>أنشئ بواسطة:</strong> {{ order.created_by }}
   </div>
   <div class="col-md-6">
+    <strong>المصدر:</strong> {% if order.customer_submitted %}طلب عميل عبر التطبيق{% else %}أمر داخلي{% endif %}<br>
     <strong>الحالة:</strong> {{ order.get_status_display }}<br>
+    <strong>حالة التسعير:</strong>
+      {% if order.pricing_status == 'PENDING_REVIEW' %}بانتظار مراجعة الأسعار
+      {% elif order.pricing_status == 'UNPRICED' %}غير مسعر
+      {% else %}مسعر{% endif %}<br>
     <strong>حالة الشحن:</strong> {{ order.shipment_state_label }}<br>
     <strong>إجمالي الأمر:</strong> {{ order.ordered_value|floatformat:2 }} ج.م<br>
     <strong>قيمة المشحون:</strong> {{ order.shipped_value|floatformat:2 }} ج.م<br>
@@ -30,9 +40,16 @@
 {% if order.notes %}<p class="mb-0 mt-2"><strong>ملاحظات:</strong> {{ order.notes }}</p>{% endif %}
 </div>
 {% if order.status == 'DRAFT' %}
+{% if order.pricing_pending %}
+<div class="alert alert-warning">
+  هذا الطلب أرسله العميل بأسعار غير مسعّرة. راجع البنود وحدّد سعرًا موجبًا لكل بند قبل تأكيد الأمر؛ لن يسمح النظام بالتأكيد أو الشحن قبل ذلك.
+</div>
+{% endif %}
 <div class="d-flex flex-wrap gap-2 mb-3">
   <a class="btn btn-outline-primary" href="{% url 'sales:order_edit' order.pk %}">تعديل المسودة</a>
+  {% if not order.pricing_pending %}
   <form method="post" action="{% url 'sales:order_confirm' order.pk %}">{% csrf_token %}<button class="btn btn-success">تأكيد الأمر</button></form>
+  {% endif %}
 </div>
 <details class="mb-3"><summary class="text-danger">إلغاء الأمر</summary>
   <form method="post" action="{% url 'sales:order_cancel' order.pk %}" class="d-flex gap-2 mt-2">{% csrf_token %}<input name="reason" class="form-control" placeholder="سبب الإلغاء (مطلوب)" required><button class="btn btn-outline-danger">إلغاء</button></form>

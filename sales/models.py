@@ -28,6 +28,15 @@ class Customer(models.Model):
     address = models.TextField("العنوان", blank=True)
     notes = models.TextField("ملاحظات", blank=True)
     active = models.BooleanField("نشط", default=True)
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="customer_account",
+        verbose_name="مستخدم حساب العميل",
+        help_text="حساب غير داخلي مرتبط بهذا العميل؛ لا يمنح صلاحية صفحات المبيعات الداخلية.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -54,6 +63,8 @@ class Customer(models.Model):
             errors["code"] = "رمز العميل مطلوب."
         if not self.name_ar:
             errors["name_ar"] = "اسم العميل بالعربية مطلوب."
+        if self.user_id and self.user.is_staff:
+            errors["user"] = "لا يمكن ربط حساب عميل بمستخدم داخلي (staff)."
         if errors:
             raise ValidationError(errors)
 
@@ -80,6 +91,12 @@ class SalesOrder(models.Model):
     customer_reference = models.CharField("مرجع العميل", max_length=120, blank=True)
     status = models.CharField("الحالة", max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True)
     notes = models.TextField("ملاحظات", blank=True)
+    customer_submitted = models.BooleanField(
+        "طلب عبر تطبيق العميل",
+        default=False,
+        editable=False,
+        help_text="طلب مسودة أنشأه حساب عميل عبر واجهة API، وليس أمرًا مؤكدًا.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -172,6 +189,30 @@ class SalesOrder(models.Model):
         return self.lines.aggregate(total=Sum("line_total"))["total"] or Decimal("0.00")
 
     @property
+    def has_unpriced_lines(self):
+        """Whether any line still has the zero price used by a customer request."""
+        return any(line.unit_price <= 0 for line in self.lines.all())
+
+    @property
+    def pricing_pending(self):
+        """A customer-submitted order that still needs explicit staff pricing."""
+        return bool(self.customer_submitted and self.has_unpriced_lines)
+
+    @property
+    def pricing_status(self):
+        """Customer-visible pricing state, kept separate from the order status.
+
+        A positive price on every line is the explicit review signal. A legacy
+        customer-submitted order that was confirmed while unpriced is reported
+        as ``UNPRICED`` rather than pretending it is still pending review.
+        """
+        if not self.customer_submitted:
+            return "RECORDED"
+        if self.pricing_pending:
+            return "PENDING_REVIEW" if self.status == self.Status.DRAFT else "UNPRICED"
+        return "RECORDED"
+
+    @property
     def shipped_value(self):
         return (
             ShipmentLine.objects.filter(
@@ -197,7 +238,11 @@ class SalesOrder(models.Model):
 
     @property
     def can_ship(self):
-        return self.status == self.Status.CONFIRMED and self.shipment_state != self.ShipmentState.SHIPPED
+        return (
+            self.status == self.Status.CONFIRMED
+            and not self.pricing_pending
+            and self.shipment_state != self.ShipmentState.SHIPPED
+        )
 
     @property
     def can_complete(self):

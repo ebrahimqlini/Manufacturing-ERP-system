@@ -26,7 +26,12 @@
       <td>{{ order.customer.name_ar }} <bdi dir="ltr">{{ order.customer.code }}</bdi></td>
       <td>{{ order.order_date|date:"Y-m-d" }}</td>
       <td>{{ order.requested_delivery_date|date:"Y-m-d"|default:"—" }}</td>
-      <td>{{ order.get_status_display }}</td>
+      <td>
+        {{ order.get_status_display }}
+        {% if order.customer_submitted %}<span class="badge bg-info text-dark">طلب عميل</span>{% endif %}
+        {% if order.pricing_status == 'PENDING_REVIEW' %}<span class="badge bg-warning text-dark">بانتظار التسعير</span>
+        {% elif order.pricing_status == 'UNPRICED' %}<span class="badge bg-danger">أسعار غير مسجلة</span>{% endif %}
+      </td>
       <td>{{ order.shipment_state_label }}</td>
       <td>{{ order.ordered_value|floatformat:2 }} ج.م</td>
       <td><a href="{% url 'sales:order_detail' order.pk %}">عرض</a></td>

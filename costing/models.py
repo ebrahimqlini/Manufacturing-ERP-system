@@ -397,6 +397,12 @@ class CostingPeriod(models.Model):
             "بديل FIFO/المتوسط المرجح غير متاح حتى تُرحّل تكاليف المشتريات. الأرقام مؤقتة حتى يعتمدها المحاسب."
         ),
     )
+    labor_recorded = models.BooleanField(
+        "تم تسجيل مصاريف العمالة",
+        default=False,
+        editable=False,
+        help_text="يفرّق بين غياب بند العمالة وبين تسجيله صراحة بقيمة 0.00.",
+    )
     labor_total = models.DecimalField("إجمالي مصاريف العمالة", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     electricity_total = models.DecimalField("إجمالي مصاريف الكهرباء", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     water_total = models.DecimalField("إجمالي مصاريف المياه", max_digits=18, decimal_places=2, default=Decimal("0.00"))

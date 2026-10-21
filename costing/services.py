@@ -275,6 +275,8 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
         period.end_date = end_date
 
         expenses = MonthlyExpense.objects.filter(year=year, month=month)
+        labor_recorded = expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).exists()
+        period.labor_recorded = labor_recorded
         labor_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.LABOR).aggregate(s=Sum("amount"))["s"])
         electricity_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).aggregate(s=Sum("amount"))["s"])
         water_total = _cents(expenses.filter(expense_type=MonthlyExpense.ExpenseType.WATER).aggregate(s=Sum("amount"))["s"])
@@ -408,6 +410,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     "material_weight": Decimal("0"),
                     "materials": {},
                     "has_missing_price": False,
+                    "requires_review": False,
                     "line_ids": set(),
                     "line_good": {},
                 },
@@ -478,9 +481,13 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                 )
             else:
                 if exp.scope == MonthlyExpense.AllocationScope.PRODUCT:
+                    is_complete = False
                     missing_notes.append(
-                        f"مصروف مخصص للمنتج {exp.product_id} بدون إنتاج مسجل له هذا الشهر؛ لم يُوزَّع وتم إظهاره كمصروف مشترك."
+                        f"مصروف مخصص للمنتج {exp.product_id} بدون إنتاج مسجل له هذا الشهر؛ "
+                        "تم توزيعه كمصروف مشترك والنتيجة تحتاج مراجعة."
                     )
+                    for pdata in product_data.values():
+                        pdata["requires_review"] = True
                 bucket = shared
             if exp.expense_type == MonthlyExpense.ExpenseType.LABOR:
                 bucket["labor"] += exp.amount
@@ -508,10 +515,14 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
         for line_id, line_totals in direct_by_line.items():
             line_products = [p for p in product_data.values() if p["production_line_id"] == line_id]
             if not line_products:
+                is_complete = False
                 missing_notes.append(
-                    f"مصروف مخصص لخط الإنتاج {line_id} بدون إنتاج مسجل على هذا الخط هذا الشهر؛ تم توزيعه على باقي المنتجات."
+                    f"مصروف مخصص لخط الإنتاج {line_id} بدون إنتاج مسجل على هذا الخط هذا الشهر؛ "
+                    "تم توزيعه على باقي المنتجات والنتيجة تحتاج مراجعة."
                 )
                 spread = list(product_data.values())
+                for pdata in spread:
+                    pdata["requires_review"] = True
                 even = Decimal("1") / Decimal(len(spread)) if spread else Decimal("0")
                 _distribute_bucket(
                     [(pdata, even) for pdata in spread],
@@ -526,8 +537,10 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             else:
                 is_complete = False
                 missing_notes.append(
-                    "مصروف خاص بخط إنتاج بدون وحدات جيدة مسجلة؛ تم توزيعه بالتساوي على منتجات الخط والنتيجة غير نهائية."
+                    "مصروف خاص بخط إنتاج بدون وحدات جيدة مسجلة؛ تم توزيعه بالتساوي على منتجات الخط والنتيجة غير نهائية وتحتاج مراجعة."
                 )
+                for pdata in line_products:
+                    pdata["requires_review"] = True
                 even = Decimal("1") / Decimal(len(line_products))
                 assignments = [(pdata, even) for pdata in line_products]
             _distribute_bucket(assignments, line_totals, ALLOCATION_FIELDS, "_line")
@@ -539,8 +552,15 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             pdata["water_allocated"] += totals["water"]
             pdata["other_allocated"] += totals["other"]
 
-        # Electricity and water are required operating utilities: a month with
-        # production must not silently treat a missing utility bill as zero.
+        # Labor, electricity, and water are required monthly operating records:
+        # a month with production must not silently treat an unrecorded item as
+        # zero. An explicitly recorded 0.00 remains a confirmed zero.
+        if not labor_recorded:
+            is_complete = False
+            missing_notes.append(
+                "لم تُسجل مصاريف العمالة لهذا الشهر رغم وجود إنتاج؛ لا يُفترض أن قيمتها صفر — "
+                "سجّل مصاريف العمالة الفعلية، أو 0.00 صراحةً عند تأكيد عدم وجود مصروف."
+            )
         if not expenses.filter(expense_type=MonthlyExpense.ExpenseType.ELECTRICITY).exists():
             is_complete = False
             missing_notes.append(
@@ -646,7 +666,11 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     allocated_other_cost=slot.get("other_allocated", Decimal("0.00")),
                     total_production_cost=slot.get("total_cost", slot["good_material_cost"]),
                     cost_per_good_unit=slot.get("cost_per_good_unit"),
-                    calculation_status="INCOMPLETE" if slot["has_missing_price"] else "COMPLETE",
+                    calculation_status=(
+                        "INCOMPLETE"
+                        if slot["has_missing_price"] or slot["good_units"] <= 0
+                        else "COMPLETE"
+                    ),
                 )
             )
         ProductionOrderCostingEntry.objects.bulk_create(order_entries)
@@ -681,8 +705,10 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                 cost_per_unit = cost_per_unit.quantize(FOUR_DECIMALS, rounding=ROUND_HALF_UP)
             else:
                 cost_per_unit = None
+                is_complete = False
+                pdata["requires_review"] = True
                 missing_notes.append(
-                    f"لا توجد وحدات جيدة مسجلة للمنتج {product.sku} هذا الشهر؛ لا يمكن حساب تكلفة الوحدة الجيدة."
+                    f"لا توجد وحدات جيدة مسجلة للمنتج {product.sku} هذا الشهر؛ لا يمكن حساب تكلفة الوحدة الجيدة، والنتيجة تحتاج مراجعة."
                 )
 
             if pdata["material_cost"] == 0 and (pdata["good_units"] > 0 or pdata["scrap_units"] > 0):
@@ -736,7 +762,11 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     cost_per_good_unit=cost_per_unit,
                     selling_price_snapshot=selling_price_obj.selling_price if selling_price_obj else None,
                     material_breakdown=breakdown,
-                    calculation_status="INCOMPLETE" if pdata["has_missing_price"] else "COMPLETE",
+                    calculation_status=(
+                        "INCOMPLETE"
+                        if pdata["has_missing_price"] or pdata.get("requires_review")
+                        else "COMPLETE"
+                    ),
                 )
             )
 
@@ -744,7 +774,10 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
 
         period.materials_total = grand_materials
         period.total_production_cost = grand_total
-        period.is_complete = is_complete and not any(p["has_missing_price"] for p in product_data.values())
+        period.is_complete = is_complete and not any(
+            p["has_missing_price"] or p.get("requires_review")
+            for p in product_data.values()
+        )
         header = [
             "طريقة تقييم المواد الحالية: أسعار يدخلها المالك لكل مادة خام (Standard). "
             "الأرقام مؤقتة إلى حين اعتماد طريقة تقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل تكلفة.",

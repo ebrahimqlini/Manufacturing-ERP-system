@@ -1,6 +1,6 @@
 # Paper-products factory ERP foundation
 
-Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, a confirmed zero-cost bill kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots kept separate from costing valuation. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation.
+Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, required labor/electricity/water records with a confirmed zero kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots kept separate from costing valuation. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation. A versioned mobile API foundation under `/api/v1/` adds token authentication, strict customer data isolation, draft customer order requests, and an owner dashboard projection over existing operational and persisted costing data. Customer-submitted orders with zero prices cannot be confirmed or shipped until staff review every line; dashboard document counts and production date bases are explicit, and persisted costing allocation/reconciliation fields are exposed without recalculating product costs.
 
 The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers remain out of scope until factory policy is confirmed. Monthly product costing is implemented, but it prices material consumption with owner-entered provisional standard prices and does not use FIFO or weighted average, because no valuation method is approved and the stock ledger carries no cost; costs are therefore provisional until an accountant approves a valuation method. Shared purchasing and supplier management is implemented: suppliers, purchase orders, and receipts through the shared ledger, where purchase prices are recorded for traceability only and do not change the provisional costing valuation. Shared sales and customer management is implemented: customers, sales orders, and shipments through the shared ledger, with mixed-unit shipment valuation, an explicit audited reopen path when a reversal leaves quantity outstanding, and sales prices recorded for traceability only without creating accounting entries or changing costing valuation. Supplier invoices, customer invoices, payments, and accounting postings remain part of the later accounting phase. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
 
@@ -10,6 +10,7 @@ The ERP uses one shared catalog, inventory ledger, warehouse/location system, an
 - Django 5.2.18 (LTS; pinned in `requirements.txt`).
 - PostgreSQL 18.6 (supported major/minor at selection time; intended deployment database).
 - Psycopg 3.3.6 (pinned PostgreSQL adapter).
+- Django REST Framework 3.18.3 and drf-spectacular 0.30.0 for the versioned mobile API and OpenAPI schema.
 - Bootstrap RTL 5.3.8 is self-hosted under `core/static/` so the initial page does not depend on a CDN. Its license is included alongside the asset.
 
 Compatibility references: [Django 5.2 installation FAQ](https://docs.djangoproject.com/en/5.2/faq/install/), [Django 5.2 release notes](https://docs.djangoproject.com/en/5.2/releases/5.2/), [PostgreSQL version policy](https://www.postgresql.org/support/versioning/), [Bootstrap RTL guide](https://getbootstrap.com/docs/5.3/getting-started/rtl/).
@@ -48,7 +49,38 @@ Use separate settings for each environment:
 
 The current settings consume process environment variables. To use an actual local `.env`, add and configure a dotenv loader deliberately; merely creating the file will not load it. `.env.example` shows placeholders for the requested local PostgreSQL names and port, not evidence that the database or role currently exist. Verify the intended target and migration plan before applying migrations.
 
-The checked-in dependency manifest pins Django, Psycopg, and their resolved runtime dependencies. If the Python minor version changes, recreate `.venv` and rerun checks and tests. For deployments, run `python manage.py check --deploy` only after configuring the intended TLS and host settings; the development environment is not a production deployment profile.
+The checked-in dependency manifest pins Django, Psycopg, Django REST Framework, drf-spectacular, and their resolved runtime dependencies. If the Python minor version changes, recreate `.venv` and rerun checks and tests. For deployments, run `python manage.py check --deploy` only after configuring the intended TLS and host settings; the development environment is not a production deployment profile.
+
+## Mobile API
+
+The API is served under `/api/v1/` and uses DRF token authentication only. It is
+not a direct database interface: mobile clients must never connect to
+PostgreSQL. Customers and owner/staff users have separate explicit permissions,
+and customer records are isolated by the linked customer account.
+
+```text
+POST /api/v1/auth/token/       obtain a token
+POST /api/v1/auth/logout/      revoke the current token
+GET  /api/v1/customer/...      customer profile, products, prices, orders
+POST /api/v1/customer/order-requests/
+GET  /api/v1/owner/dashboard/  owner dashboard snapshot
+GET  /api/v1/owner/sales/      sales section
+GET  /api/v1/owner/purchases/  purchasing section
+GET  /api/v1/owner/inventory/  inventory and low-stock section
+GET  /api/v1/owner/production/ production section
+GET  /api/v1/owner/costing/    persisted monthly costing section
+GET  /api/v1/schema/           staff-only OpenAPI schema
+GET  /api/v1/docs/             staff-only interactive documentation
+```
+
+Customer order requests create draft sales orders only. They never confirm the
+order, reserve stock, create a shipment, or deduct inventory. Customer catalog
+visibility and low-stock thresholds are explicit product settings; staff must
+mark products for the customer catalog. Owner dashboard values are read from
+current persisted records with no caching. Accounting-derived profit,
+receivables, payables, and cash are intentionally unavailable because those
+modules are not implemented; see [API.md](API.md) for endpoint details,
+permissions, response semantics, and limitations.
 
 ## Migration and test workflow
 
@@ -56,7 +88,7 @@ After changing models, create migrations with `python manage.py makemigrations`,
 
 ## Planned app boundaries
 
-`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. Implemented domain apps are `catalog`, `inventory`, `manufacturing`, `costing`, `purchasing`, and `sales`. Planned apps are `accounting` and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
+`config` holds project settings and URL/ASGI/WSGI entry points. `core` holds the landing page and shared shell. `api` holds the versioned mobile API, serializers, permissions, dashboard projections, and API tests. Implemented domain apps are `catalog`, `inventory`, `manufacturing`, `costing`, `purchasing`, and `sales`. Planned apps are `accounting` and `reports`. Their scope and dependency rules are in [DECISIONS.md](DECISIONS.md); their phased prompt contracts and tests are in [PROMPT_SPECS.md](PROMPT_SPECS.md).
 
 ## Project records
 
@@ -64,3 +96,4 @@ After changing models, create migrations with `python manage.py makemigrations`,
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md): current phase and verified state.
 - [TODO.md](TODO.md): ordered next work.
 - [PROMPT_SPECS.md](PROMPT_SPECS.md): implemented Prompt 1 contract and later implementation scope and acceptance tests.
+- [API.md](API.md): mobile API endpoints, authentication, permissions, dashboard semantics, and limitations.

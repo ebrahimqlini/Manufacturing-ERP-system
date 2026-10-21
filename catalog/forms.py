@@ -26,7 +26,10 @@ class ProductCategoryForm(ArabicModelForm):
 class ProductForm(ArabicModelForm):
     class Meta:
         model = Product
-        fields = ("sku", "name_ar", "name_en", "description", "category", "base_uom", "active")
+        fields = (
+            "sku", "name_ar", "name_en", "description", "category", "base_uom",
+            "active", "available_to_customers", "low_stock_threshold",
+        )
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, **kwargs):

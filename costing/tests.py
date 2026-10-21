@@ -470,6 +470,13 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             scope=MonthlyExpense.AllocationScope.FACTORY,
             amount=Decimal("50.00"), description="water", created_by=self.staff_user,
         )
+        # Labor is a required monthly record; zero is explicit, not missing.
+        MonthlyExpense.objects.create(
+            year=self.year, month=self.month,
+            expense_type=MonthlyExpense.ExpenseType.LABOR,
+            scope=MonthlyExpense.AllocationScope.FACTORY,
+            amount=Decimal("0.00"), description="labor", created_by=self.staff_user,
+        )
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
         entry = period.product_entries.get(product=self.product_a)
@@ -563,7 +570,8 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             scrap_qty=Decimal("50"),
         )
 
-        # Monthly expenses
+        # Monthly expenses: all required buckets are present, but this product
+        # has no good output and therefore no usable good-unit cost.
         MonthlyExpense.objects.create(
             year=self.year,
             month=self.month,
@@ -573,6 +581,18 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             description="labor",
             created_by=self.staff_user,
         )
+        MonthlyExpense.objects.create(
+            year=self.year, month=self.month,
+            expense_type=MonthlyExpense.ExpenseType.ELECTRICITY,
+            scope=MonthlyExpense.AllocationScope.FACTORY,
+            amount=Decimal("300.00"), description="electricity", created_by=self.staff_user,
+        )
+        MonthlyExpense.objects.create(
+            year=self.year, month=self.month,
+            expense_type=MonthlyExpense.ExpenseType.WATER,
+            scope=MonthlyExpense.AllocationScope.FACTORY,
+            amount=Decimal("120.00"), description="water", created_by=self.staff_user,
+        )
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
         entry = period.product_entries.get(product=self.product_a)
@@ -580,6 +600,10 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
         self.assertEqual(entry.good_units_produced, Decimal("0"))
         self.assertIsNone(entry.cost_per_good_unit)
         self.assertGreater(entry.total_production_cost, Decimal("0"))
+        self.assertEqual(entry.calculation_status, "INCOMPLETE")
+        self.assertFalse(period.is_complete)
+        with self.assertRaises(ValidationError):
+            finalize_costing_period(period=period, actor=self.staff_user)
 
     def test_expense_allocation_policies_and_exact_cent_reconciliation(self):
         # Create runs for two products on two lines:
@@ -811,6 +835,12 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             expense_type=MonthlyExpense.ExpenseType.WATER,
             scope=MonthlyExpense.AllocationScope.FACTORY,
             amount=Decimal("120.00"), description="water", created_by=self.staff_user,
+        )
+        MonthlyExpense.objects.create(
+            year=self.year, month=self.month,
+            expense_type=MonthlyExpense.ExpenseType.LABOR,
+            scope=MonthlyExpense.AllocationScope.FACTORY,
+            amount=Decimal("0.00"), description="labor", created_by=self.staff_user,
         )
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
@@ -1123,6 +1153,77 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
         with self.assertRaises(ValidationError):
             finalize_costing_period(period=period, actor=self.staff_user)
 
+    def test_missing_labor_is_incomplete_and_explicit_zero_labor_is_complete(self):
+        self._create_production_run(
+            product=self.product_a, line=self.line_1,
+            planned_qty=Decimal("100"), actual_paper_kg=Decimal("200"),
+            actual_foil_rolls=Decimal("1"), good_qty=Decimal("100"), scrap_qty=Decimal("0"),
+        )
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("300.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.WATER, Decimal("120.50"))
+
+        period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
+        self.assertFalse(period.labor_recorded)
+        self.assertFalse(period.is_complete)
+        self.assertIn("لم تُسجل مصاريف العمالة", period.missing_data_notes)
+        with self.assertRaises(ValidationError):
+            finalize_costing_period(period=period, actor=self.staff_user)
+
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.LABOR, Decimal("0.00"))
+        period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
+        self.assertTrue(period.labor_recorded)
+        self.assertTrue(period.is_complete)
+        self.assertNotIn("لم تُسجل مصاريف العمالة", period.missing_data_notes)
+        self.assertEqual(period.labor_total, Decimal("0.00"))
+
+    def test_line_fallback_allocation_requires_review_and_blocks_finalize(self):
+        self._create_production_run(
+            product=self.product_a, line=self.line_1,
+            planned_qty=Decimal("100"), actual_paper_kg=Decimal("200"),
+            actual_foil_rolls=Decimal("1"), good_qty=Decimal("100"), scrap_qty=Decimal("0"),
+        )
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.LABOR, Decimal("0.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("300.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.WATER, Decimal("120.50"))
+        # Line 2 has no production this month; the expense falls back to all
+        # products, which is a review-required allocation, not a clean result.
+        self._add_expense(
+            self.year, self.month, MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL,
+            Decimal("50.00"), scope=MonthlyExpense.AllocationScope.LINE, line=self.line_2,
+        )
+
+        period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
+        self.assertFalse(period.is_complete)
+        self.assertIn("خط الإنتاج", period.missing_data_notes)
+        self.assertIn("مراجعة", period.missing_data_notes)
+        entry = period.product_entries.get(product=self.product_a)
+        self.assertEqual(entry.calculation_status, "INCOMPLETE")
+        with self.assertRaises(ValidationError):
+            finalize_costing_period(period=period, actor=self.staff_user)
+
+    def test_product_scoped_fallback_allocation_requires_review(self):
+        self._create_production_run(
+            product=self.product_a, line=self.line_1,
+            planned_qty=Decimal("100"), actual_paper_kg=Decimal("200"),
+            actual_foil_rolls=Decimal("1"), good_qty=Decimal("100"), scrap_qty=Decimal("0"),
+        )
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.LABOR, Decimal("0.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("300.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.WATER, Decimal("120.50"))
+        self._add_expense(
+            self.year, self.month, MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL,
+            Decimal("50.00"), scope=MonthlyExpense.AllocationScope.PRODUCT, product=self.product_b,
+        )
+
+        period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
+        self.assertFalse(period.is_complete)
+        self.assertIn("بدون إنتاج", period.missing_data_notes)
+        self.assertIn("مراجعة", period.missing_data_notes)
+        entry = period.product_entries.get(product=self.product_a)
+        self.assertEqual(entry.calculation_status, "INCOMPLETE")
+        with self.assertRaises(ValidationError):
+            finalize_costing_period(period=period, actor=self.staff_user)
+
     def test_period_compare_view_reads_utility_totals_across_months(self):
         self._create_production_run(
             product=self.product_a, line=self.line_1,
@@ -1163,6 +1264,7 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
 
         self._add_expense(target_year, 1, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("300.00"))
         self._add_expense(target_year, 1, MonthlyExpense.ExpenseType.WATER, Decimal("120.00"))
+        self._add_expense(target_year, 1, MonthlyExpense.ExpenseType.LABOR, Decimal("0.00"))
         self._add_expense(target_year, 2, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("999.00"))
         self._add_expense(target_year, 2, MonthlyExpense.ExpenseType.WATER, Decimal("111.00"))
 
@@ -1234,6 +1336,7 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
         )
         # Electricity recorded as an explicit, confirmed zero cost.
         self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.ELECTRICITY, Decimal("0.00"))
+        self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.LABOR, Decimal("0.00"))
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
         self.assertEqual(period.electricity_total, Decimal("0.00"))

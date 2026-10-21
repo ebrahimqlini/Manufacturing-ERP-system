@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from django import forms
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.forms import inlineformset_factory
@@ -22,7 +23,10 @@ class ArabicFormMixin:
 class CustomerForm(ArabicFormMixin, forms.ModelForm):
     class Meta:
         model = Customer
-        fields = ("code", "name_ar", "name_en", "contact_person", "phone", "email", "address", "notes", "active")
+        fields = (
+            "code", "name_ar", "name_en", "contact_person", "phone", "email",
+            "address", "notes", "active", "user",
+        )
         widgets = {
             "address": forms.Textarea(attrs={"rows": 2}),
             "notes": forms.Textarea(attrs={"rows": 2}),
@@ -30,6 +34,10 @@ class CustomerForm(ArabicFormMixin, forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["user"].queryset = get_user_model().objects.filter(
+            is_staff=False, is_active=True
+        ).order_by("username")
+        self.fields["user"].required = False
         self.apply_arabic_widgets()
 
     def clean_code(self):

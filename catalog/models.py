@@ -57,6 +57,19 @@ class Product(models.Model):
     category = models.ForeignKey(ProductCategory, on_delete=models.PROTECT, related_name="products", verbose_name="الفئة")
     base_uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="base_products", verbose_name="وحدة المخزون الأساسية")
     active = models.BooleanField("نشط", default=True)
+    available_to_customers = models.BooleanField(
+        "متاح في كتالوج العملاء",
+        default=False,
+        help_text="يظهر في واجهة العملاء فقط عند تفعيله صراحةً.",
+    )
+    low_stock_threshold = models.DecimalField(
+        "حد المخزون المنخفض",
+        max_digits=30,
+        decimal_places=12,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="صفر يعني عدم تفعيل تنبيه المخزون المنخفض لهذا الصنف.",
+    )
     created_at = models.DateTimeField("تاريخ الإنشاء", auto_now_add=True)
     updated_at = models.DateTimeField("آخر تعديل", auto_now=True)
 
@@ -65,6 +78,10 @@ class Product(models.Model):
         constraints = [
             models.CheckConstraint(condition=~models.Q(sku=""), name="product_sku_not_empty"),
             models.CheckConstraint(condition=~models.Q(name_ar=""), name="product_ar_name_not_empty"),
+            models.CheckConstraint(
+                condition=models.Q(low_stock_threshold__gte=0),
+                name="product_low_stock_threshold_nonnegative",
+            ),
         ]
 
     def clean(self):
