@@ -18,10 +18,11 @@ from .models import (
     PurchaseReceiptLine,
 )
 
+from core.permissions import require_permission, require_staff
+
 
 def _staff(actor):
-    if not actor or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("هذا الإجراء متاح لمستخدمي النظام الداخليين فقط.")
+    require_staff(actor)
 
 
 def _purchase_order_number():
@@ -51,7 +52,8 @@ def save_draft_order(*, actor, lines, order=None, **values):
     Only confirmed documents are locked; draft lines may be replaced. A
     confirmed/cancelled order is never edited by this service.
     """
-    _staff(actor)
+    require_permission(actor, "purchasing.confirm_purchase_order", "حفظ أمر شراء")
+    require_staff(actor)
     if not lines:
         raise ValidationError("أضف بندًا واحدًا على الأقل لأمر الشراء.")
 
@@ -86,7 +88,8 @@ def save_draft_order(*, actor, lines, order=None, **values):
 
 
 def confirm_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "purchasing.confirm_purchase_order", "تأكيد أمر الشراء")
+    require_staff(actor)
     with transaction.atomic():
         order = PurchaseOrder.objects.select_for_update().select_related("supplier").get(pk=order.pk)
         if order.status != PurchaseOrder.Status.DRAFT:
@@ -108,7 +111,8 @@ def confirm_order(*, order, actor):
 
 
 def cancel_order(*, order, actor, reason):
-    _staff(actor)
+    require_permission(actor, "purchasing.cancel_purchase_order", "إلغاء أمر الشراء")
+    require_staff(actor)
     if not reason or not reason.strip():
         raise ValidationError({"reason": "سبب إلغاء أمر الشراء مطلوب."})
     with transaction.atomic():
@@ -135,7 +139,8 @@ def create_receipt(*, order, actor, reference, received_date, destination_locati
     transaction. Quantities are checked against the net received quantity
     (reversed receipts excluded), so duplicate or over-receipt cannot pass.
     """
-    _staff(actor)
+    require_permission(actor, "purchasing.create_receipt", "تسجيل استلام مشتريات")
+    require_staff(actor)
     reference = (reference or "").strip()
     if not reference:
         raise ValidationError({"reference": "مرجع الاستلام مطلوب لمنع التكرار."})

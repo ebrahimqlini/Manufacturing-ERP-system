@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import uuid
 
@@ -36,11 +36,18 @@ class APITestCase(TestCase):
         self.today = date.today()
         self.suffix = uuid.uuid4().hex[:8]
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         self.owner = User.objects.create_user(
             username=f"owner-{self.suffix}",
             password="owner-test-password",
             is_staff=True,
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.owner.user_permissions.set(perms)
         self.customer_user = User.objects.create_user(
             username=f"customer-{self.suffix}",
             password="customer-test-password",
@@ -232,6 +239,7 @@ class APITestCase(TestCase):
         return confirm_purchase_order(order=order, actor=self.owner)
 
     def _create_production(self):
+        from django.utils import timezone
         order = ProductionOrder.objects.create(
             order_number=f"PRD-{self.suffix}",
             product=self.product2,
@@ -252,6 +260,7 @@ class APITestCase(TestCase):
             good_quantity_base=Decimal("8"),
             scrap_quantity_base=Decimal("2"),
             actor=self.owner,
+            occurred_at=timezone.make_aware(datetime.combine(self.today, time(12, 0))),
         )
         return order
 
@@ -940,6 +949,7 @@ class OwnerDashboardAPITests(APITestCase):
         self.assertEqual(data["purchases"]["net_received_value"], "0.00")
 
     def test_production_status_and_output_use_explicit_different_period_bases(self):
+        from django.db import connection
         order = self._create_production()
         if self.today.month == 1:
             prior_year, prior_month = self.today.year - 1, 12
@@ -947,9 +957,14 @@ class OwnerDashboardAPITests(APITestCase):
             prior_year, prior_month = self.today.year, self.today.month - 1
         prior_start = date(prior_year, prior_month, 1)
         prior_end = date(prior_year, prior_month, 28)
-        ProductionOrder.objects.filter(pk=order.pk).update(
-            created_at=timezone.make_aware(datetime(prior_year, prior_month, 15, 12))
-        )
+        prior_created_at = timezone.make_aware(datetime(prior_year, prior_month, 15, 12))
+        # Bypass ORM update protection (auto_now_add prevents create() from setting created_at)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'UPDATE manufacturing_productionorder SET created_at = %s WHERE id = %s',
+                [prior_created_at, order.pk]
+            )
+        order.refresh_from_db()
 
         current = self.owner_client.get(reverse("api:owner-dashboard"), self._period_params())
         self.assertEqual(current.status_code, 200)

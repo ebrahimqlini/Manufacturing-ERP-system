@@ -26,15 +26,18 @@ from .models import (
     MonthlyProfitCOGSLine,
     MonthlyProfitPeriod,
     ProductCostingEntry,
+    lock_costing_month,
+    lock_profit_month,
 )
+
+from core.permissions import require_permission, require_staff
 
 MONEY = Decimal("0.01")
 SIX_PLACES = Decimal("0.000001")
 
 
 def _staff(actor):
-    if actor is not None and (not actor.is_authenticated or not actor.is_staff):
-        raise ValidationError("الأرباح والمصاريف الشهرية متاحة للمستخدمين المصرح لهم فقط.")
+    require_staff(actor)
 
 
 def _money(value):
@@ -163,7 +166,8 @@ def calculate_monthly_profit(*, year, month, actor=None):
     material cost per good unit from the latest available costing entry. Products
     manufactured but not sold remain inventory and are not expensed.
     """
-    _staff(actor)
+    require_permission(actor, "costing.calculate_monthly_profit", "احتساب الأرباح الشهرية")
+    require_staff(actor)
     try:
         year = int(year)
         month = int(month)
@@ -176,6 +180,13 @@ def calculate_monthly_profit(*, year, month, actor=None):
     start, end = _month_range(year, month)
 
     with transaction.atomic():
+        # Profit-month advisory lock first (locking protocol): serializes with
+        # finalization/reopen/shipments and with the first creation of this
+        # month's period row. get_or_create under a row lock plus this lock
+        # means concurrent first calculations never race on the unique
+        # year/month constraint and a stale recalculation can never overwrite
+        # a concurrent finalization.
+        lock_profit_month(year, month)
         # Use get_or_create under row lock: concurrent first calculations
         # serialize instead of racing to satisfy the unique month constraint.
         period, _ = MonthlyProfitPeriod.objects.select_for_update().get_or_create(
@@ -365,11 +376,14 @@ def calculate_monthly_profit(*, year, month, actor=None):
 
 def finalize_monthly_profit(*, period, actor):
     """Finalize a complete month and refresh later draft carry-forward rows."""
+    require_permission(actor, "costing.finalize_monthly_profit", "اعتماد نتيجة الشهر")
     _staff(actor)
-    if actor is None or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("اعتماد نتيجة الشهر متاح للمستخدمين المصرح لهم فقط.")
 
     with transaction.atomic():
+        # Profit-month advisory lock before any row lock (locking protocol):
+        # finalization is mutually exclusive with every operational write for
+        # the same month, even before the period row exists.
+        lock_profit_month(period.year, period.month)
         period = MonthlyProfitPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status == MonthlyProfitPeriod.Status.FINALIZED:
             raise ValidationError("هذه الفترة معتمدة نهائيًا بالفعل.")
@@ -436,9 +450,8 @@ def reopen_monthly_profit(*, period, actor, reason):
     silently rewritten. The record keeps its original finalization metadata and
     adds the reopen actor, time, and reason.
     """
+    require_permission(actor, "costing.reopen_monthly_profit", "إعادة فتح نتيجة الشهر")
     _staff(actor)
-    if actor is None or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("إعادة فتح نتيجة الشهر متاحة للمستخدمين المصرح لهم فقط.")
     reason = (reason or "").strip()
     if not reason:
         raise ValidationError(
@@ -446,6 +459,10 @@ def reopen_monthly_profit(*, period, actor, reason):
         )
 
     with transaction.atomic():
+        # Profit-month advisory lock before any row lock (locking protocol):
+        # reopening is mutually exclusive with concurrent operational writes
+        # and finalizations for the same month.
+        lock_profit_month(period.year, period.month)
         period = MonthlyProfitPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status != MonthlyProfitPeriod.Status.FINALIZED:
             raise ValidationError("يمكن إعادة فتح الفترات المعتمدة نهائيًا فقط.")
@@ -480,14 +497,18 @@ def reopen_monthly_profit(*, period, actor, reason):
 
 def reverse_monthly_expense(*, expense, actor, reason):
     """Preserve an expense row and mark it reversed without deleting history."""
+    require_permission(actor, "costing.manage_expenses", "عكس المصاريف")
     _staff(actor)
-    if actor is None or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("عكس المصاريف متاح للمستخدمين المصرح لهم فقط.")
     reason = (reason or "").strip()
     if not reason:
         raise ValidationError({"reason": "سبب عكس المصروف مطلوب."})
 
     with transaction.atomic():
+        # Locking protocol: the expense's costing month before its profit
+        # month, before the expense row lock, so an expense reversal cannot
+        # interleave with the finalization of either period.
+        lock_costing_month(expense.year, expense.month)
+        lock_profit_month(expense.year, expense.month)
         expense = MonthlyExpense.objects.select_for_update().get(pk=expense.pk)
         if expense.status == MonthlyExpense.Status.REVERSED:
             raise ValidationError("هذا المصروف معكوس بالفعل.")

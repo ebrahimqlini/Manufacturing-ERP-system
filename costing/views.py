@@ -83,6 +83,31 @@ def costing_financials_required(view):
     return wrapped
 
 
+# Creating, editing, and reversing monthly expenses all require this explicit
+# permission (declared on costing.CostingPeriod in the model Meta). It is never
+# assigned automatically; the owner grants it per user or group. Staff status
+# alone is deliberately not enough, matching the service-layer check used by
+# reverse_monthly_expense. The permission alone is also not enough: these pages
+# were staff-only before the permission layer was added, so both are required.
+MANAGE_EXPENSES_PERMISSION = "costing.manage_expenses"
+
+
+def manage_expenses_required(view):
+    """Restrict expense write pages to staff holding ``costing.manage_expenses``."""
+
+    @login_required
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        user = request.user
+        if user.is_staff and user.has_perm(MANAGE_EXPENSES_PERMISSION):
+            return view(request, *args, **kwargs)
+        return HttpResponseForbidden(
+            "إدارة المصاريف الشهرية تتطلب صلاحية صريحة؛ تواصل مع مدير النظام لمنحك الصلاحية."
+        )
+
+    return wrapped
+
+
 # --- Monthly Costing Periods & Reports ---
 
 @costing_financials_required
@@ -505,7 +530,7 @@ def expense_list(request):
     )
 
 
-@staff_required
+@manage_expenses_required
 def expense_create(request):
     if request.method == "POST":
         submitted_key = request.POST.get("submission_key")
@@ -558,7 +583,7 @@ def expense_create(request):
     )
 
 
-@staff_required
+@manage_expenses_required
 def expense_edit(request, pk):
     expense = get_object_or_404(MonthlyExpense, pk=pk)
     period = CostingPeriod.objects.filter(year=expense.year, month=expense.month, status=CostingPeriod.Status.FINALIZED).first()
@@ -596,7 +621,7 @@ def expense_edit(request, pk):
     )
 
 
-@staff_required
+@manage_expenses_required
 def expense_reverse(request, pk):
     expense = get_object_or_404(
         MonthlyExpense.objects.select_related("production_line", "product"), pk=pk

@@ -18,10 +18,11 @@ from .models import (
     ShipmentLine,
 )
 
+from core.permissions import require_permission, require_staff
+
 
 def _staff(actor):
-    if not actor or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("هذا الإجراء متاح لمستخدمي النظام الداخليين فقط.")
+    require_staff(actor)
 
 
 def _sales_order_number():
@@ -97,7 +98,8 @@ def save_draft_order(*, actor, lines, order=None, **values):
     confirmed, completed, or cancelled order is never edited by this service.
     This staff-facing entry point keeps the existing web permission boundary.
     """
-    _staff(actor)
+    require_permission(actor, "sales.confirm_sales_order", "حفظ أمر بيع")
+    require_staff(actor)
     return _create_draft_order(actor=actor, lines=lines, order=order, **values)
 
 
@@ -173,7 +175,8 @@ def submit_customer_order_request(*, actor, lines, **values):
 
 
 def confirm_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "sales.confirm_sales_order", "تأكيد أمر البيع")
+    require_staff(actor)
     with transaction.atomic():
         order = SalesOrder.objects.select_for_update().select_related("customer").get(pk=order.pk)
         if order.status != SalesOrder.Status.DRAFT:
@@ -199,7 +202,8 @@ def confirm_order(*, order, actor):
 
 
 def cancel_order(*, order, actor, reason):
-    _staff(actor)
+    require_permission(actor, "sales.cancel_sales_order", "إلغاء أمر البيع")
+    require_staff(actor)
     if not reason or not reason.strip():
         raise ValidationError({"reason": "سبب إلغاء أمر البيع مطلوب."})
     with transaction.atomic():
@@ -219,7 +223,8 @@ def cancel_order(*, order, actor, reason):
 
 
 def complete_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "sales.complete_sales_order", "إكمال أمر البيع")
+    require_staff(actor)
     with transaction.atomic():
         order = SalesOrder.objects.select_for_update().get(pk=order.pk)
         if order.status != SalesOrder.Status.CONFIRMED:
@@ -242,7 +247,8 @@ def reopen_completed_order(*, order, actor, reason):
     CONFIRMED so the outstanding quantity can be shipped again and completed
     again. The reason is mandatory and stored with actor/time for audit.
     """
-    _staff(actor)
+    require_permission(actor, "sales.complete_sales_order", "إعادة فتح أمر البيع")
+    require_staff(actor)
     reason = (reason or "").strip()
     if not reason:
         raise ValidationError({"reason": "سبب إعادة فتح أمر البيع مطلوب."})
@@ -275,7 +281,8 @@ def create_shipment(*, order, actor, reference, shipment_date, source_location, 
     and the inventory service rejects insufficient stock inside the same
     transaction.
     """
-    _staff(actor)
+    require_permission(actor, "sales.create_shipment", "تسجيل شحنة مبيعات")
+    require_staff(actor)
     reference = (reference or "").strip()
     if not reference:
         raise ValidationError({"reference": "مرجع الشحن مطلوب لمنع التكرار."})
@@ -284,15 +291,16 @@ def create_shipment(*, order, actor, reference, shipment_date, source_location, 
     if source_location is None:
         raise ValidationError({"source_location": "موقع الصرف مطلوب."})
     effective_date = shipment_date or date.today()
-    # Revenue is recognized at shipment. A finalized monthly result must be
-    # reopened before a late shipment can change its revenue and loss balance.
-    from costing.models import ensure_profit_period_open
-
-    ensure_profit_period_open(
-        effective_date.year, effective_date.month, "تسجيل شحنة مبيعات"
-    )
 
     with transaction.atomic():
+        from costing.models import ensure_profit_period_open, lock_profit_month
+        # Month-scoped advisory lock: serializes against profit finalization
+        # even when no MonthlyProfitPeriod row exists for this month yet (a
+        # plain select_for_update() would lock nothing in that case).
+        lock_profit_month(effective_date.year, effective_date.month)
+        ensure_profit_period_open(
+            effective_date.year, effective_date.month, "تسجيل شحنة مبيعات"
+        )
         order = SalesOrder.objects.select_for_update().select_related("customer").get(pk=order.pk)
         if order.status != SalesOrder.Status.CONFIRMED:
             raise ValidationError("لا يمكن الشحن إلا لأمر بيع مؤكد.")

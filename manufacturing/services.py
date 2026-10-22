@@ -25,13 +25,15 @@ from .models import (
     _locked_config_rows,
 )
 
+from core.permissions import require_permission, require_staff
+
 SCALE = Decimal("0.000000000001")
 ACTIVE_ORDER_STATUSES = (ProductionOrder.Status.RELEASED, ProductionOrder.Status.IN_PROGRESS)
 
 
 def _staff(actor):
-    if not actor or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("هذا الإجراء متاح لمستخدمي النظام الداخليين فقط.")
+    """Legacy helper; new code uses require_permission."""
+    require_staff(actor)
 
 
 def _order_number():
@@ -52,7 +54,8 @@ def _exact_base(value, message):
 
 
 def save_draft_order(*, actor, order=None, **values):
-    _staff(actor)
+    require_permission(actor, "manufacturing.release_order", "حفظ أمر إنتاج")
+    require_staff(actor)
     with transaction.atomic():
         if order is None:
             order = ProductionOrder(created_by=actor, order_number=_order_number())
@@ -68,7 +71,8 @@ def save_draft_order(*, actor, order=None, **values):
 
 
 def release_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "manufacturing.release_order", "إطلاق أمر الإنتاج")
+    require_staff(actor)
     with transaction.atomic():
         order = ProductionOrder.objects.select_for_update(of=("self",)).select_related(
             "product", "production_line", "bom", "routing", "planned_unit"
@@ -158,13 +162,18 @@ def requirement_status(requirement):
 
 
 def issue_material(*, order, requirement, quantity, unit, reference, actor):
-    _staff(actor)
+    require_permission(actor, "manufacturing.issue_material", "صرف مواد لأمر إنتاج")
+    require_staff(actor)
     if not reference or not reference.strip():
         raise ValidationError({"reference": "مرجع الصرف مطلوب لمنع التكرار."})
     with transaction.atomic():
-        from costing.models import ensure_period_open
+        from costing.models import ensure_period_open, lock_costing_month
 
         posting_date = timezone.localdate()
+        # Month-scoped advisory lock: serializes against costing finalization
+        # even when no CostingPeriod row exists for this month yet (a plain
+        # select_for_update() would lock nothing in that case).
+        lock_costing_month(posting_date.year, posting_date.month)
         ensure_period_open(
             posting_date.year, posting_date.month, "صرف مواد لأمر إنتاج"
         )
@@ -209,6 +218,7 @@ def issue_material(*, order, requirement, quantity, unit, reference, actor):
                 raise ValidationError({"reference": "مرجع الصرف مستخدم من قبل."}) from exc
             raise
         if order.status == ProductionOrder.Status.RELEASED:
+            order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return issue
@@ -221,7 +231,8 @@ def _previous_non_skipped_step(order, step):
 
 
 def record_operation_progress(*, order, order_operation, quantity, unit, notes, actor, submission_key=None):
-    _staff(actor)
+    require_permission(actor, "manufacturing.record_operation_progress", "تسجيل تقدم العملية")
+    require_staff(actor)
     submission_key = submission_key or uuid.uuid4()
     with transaction.atomic():
         order = ProductionOrder.objects.select_for_update().select_related("product").get(pk=order.pk)
@@ -255,16 +266,19 @@ def record_operation_progress(*, order, order_operation, quantity, unit, notes, 
             order=order, order_operation=step, quantity_processed=quantity, unit=unit,
             quantity_processed_base=quantity_base, notes=notes.strip(), actor=actor,
         )
+        step._allow_status_transition = True
         step.status = ProductionOrderOperation.Status.IN_PROGRESS
         step.save(update_fields=["status"])
         if order.status == ProductionOrder.Status.RELEASED:
+            order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return progress, True
 
 
 def complete_operation(*, order, order_operation, actor, skip=False):
-    _staff(actor)
+    require_permission(actor, "manufacturing.complete_operation", "إكمال العملية")
+    require_staff(actor)
     with transaction.atomic():
         order = ProductionOrder.objects.select_for_update().get(pk=order.pk)
         if order.status not in ACTIVE_ORDER_STATUSES:
@@ -281,6 +295,7 @@ def complete_operation(*, order, order_operation, actor, skip=False):
                 raise ValidationError("لا يمكن تجاوز عملية مطلوبة في مسار الإنتاج.")
             if step.status != ProductionOrderOperation.Status.PENDING or step.progress_entries.exists():
                 raise ValidationError("لا يمكن تجاوز عملية بدأ تسجيل تقدمها.")
+            step._allow_status_transition = True
             step.status = ProductionOrderOperation.Status.SKIPPED
         else:
             if not step.progress_entries.exists():
@@ -290,22 +305,37 @@ def complete_operation(*, order, order_operation, actor, skip=False):
             previous_total = (previous_step.progress_entries.aggregate(total=Sum("quantity_processed_base"))["total"] or Decimal("0")) if previous_step else order.planned_quantity_base
             if total > previous_total:
                 raise ValidationError("كمية العملية تتجاوز الكمية التي أكملتها العملية السابقة.")
+            step._allow_status_transition = True
             step.status = ProductionOrderOperation.Status.COMPLETED
         step.save(update_fields=["status"])
         if order.status == ProductionOrder.Status.RELEASED:
+            order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return step
 
 
-def record_production_result(*, order, good_quantity, scrap_quantity, unit, notes, actor, submission_key=None):
-    _staff(actor)
+def record_production_result(*, order, good_quantity, scrap_quantity, unit, notes, actor, submission_key=None, occurred_at=None):
+    require_permission(actor, "manufacturing.record_production_result", "تسجيل نتيجة الإنتاج")
+    require_staff(actor)
     submission_key = submission_key or uuid.uuid4()
     good_quantity = Decimal(good_quantity or 0)
     scrap_quantity = Decimal(scrap_quantity or 0)
     if good_quantity < 0 or scrap_quantity < 0 or good_quantity + scrap_quantity <= 0:
         raise ValidationError("أدخل كمية جيدة أو هالك موجبة؛ لا يمكن إدخال كميات سالبة.")
+    if occurred_at is None:
+        occurred_at = timezone.now()
     with transaction.atomic():
+        from costing.models import ensure_period_open, lock_costing_month
+
+        posting_date = timezone.localdate(occurred_at)
+        # Month-scoped advisory lock: serializes against costing finalization
+        # even when no CostingPeriod row exists for this month yet (a plain
+        # select_for_update() would lock nothing in that case).
+        lock_costing_month(posting_date.year, posting_date.month)
+        ensure_period_open(
+            posting_date.year, posting_date.month, "تسجيل نتيجة إنتاج"
+        )
         order = ProductionOrder.objects.select_for_update().select_related("product").get(pk=order.pk)
         existing = ProductionResult.objects.filter(order=order, submission_key=submission_key).first()
         if existing:
@@ -314,12 +344,6 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
             if same:
                 return existing, False
             raise ValidationError("مفتاح الإرسال سبق استخدامه ببيانات مختلفة.")
-        from costing.models import ensure_period_open
-
-        posting_date = timezone.localdate()
-        ensure_period_open(
-            posting_date.year, posting_date.month, "تسجيل نتيجة إنتاج"
-        )
         if order.status not in ACTIVE_ORDER_STATUSES:
             raise ValidationError("لا يمكن تسجيل إنتاج لأمر غير نشط.")
         if order.product.base_uom_id != order.base_unit_snapshot_id:
@@ -336,8 +360,10 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
             submission_key=submission_key,
             order=order, good_quantity=good_quantity, scrap_quantity=scrap_quantity, unit=unit,
             good_quantity_base=good_base, scrap_quantity_base=scrap_base, notes=notes.strip(), actor=actor,
+            occurred_at=occurred_at,
         )
         if order.status == ProductionOrder.Status.RELEASED:
+            order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return result, True
@@ -356,7 +382,8 @@ def receive_replacement_finished_goods(*, order, original_receipt, quantity, uni
 
 
 def _receive_finished_goods(*, order, quantity, unit, destination_location, reference, actor, replacement_for):
-    _staff(actor)
+    require_permission(actor, "manufacturing.receive_finished_goods", "استلام المنتج النهائي")
+    require_staff(actor)
     if not reference or not reference.strip():
         raise ValidationError({"reference": "مرجع الاستلام مطلوب لمنع التكرار."})
     with transaction.atomic():
@@ -410,13 +437,15 @@ def _receive_finished_goods(*, order, quantity, unit, destination_location, refe
                 raise ValidationError({"reference": "مرجع استلام المنتج مستخدم من قبل."}) from exc
             raise
         if order.status == ProductionOrder.Status.RELEASED:
+            order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return receipt
 
 
 def complete_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "manufacturing.complete_order", "إكمال أمر الإنتاج")
+    require_staff(actor)
     with transaction.atomic():
         order = ProductionOrder.objects.select_for_update().get(pk=order.pk)
         if order.status not in ACTIVE_ORDER_STATUSES:
@@ -433,6 +462,7 @@ def complete_order(*, order, actor):
             raise ValidationError("استلم كامل الإنتاج الجيد أو صحح سجل الإنتاج قبل إكمال الأمر.")
         if order.operations.exclude(status__in=(ProductionOrderOperation.Status.COMPLETED, ProductionOrderOperation.Status.SKIPPED)).exists():
             raise ValidationError("أكمل عمليات المسار أو تجاوز العمليات غير المطلوبة قبل إغلاق الأمر.")
+        order._allow_status_transition = True
         order.status = ProductionOrder.Status.COMPLETED
         order.completed_at = timezone.now()
         order.save(update_fields=["status", "completed_at", "updated_at"])
@@ -440,11 +470,13 @@ def complete_order(*, order, actor):
 
 
 def cancel_order(*, order, actor):
-    _staff(actor)
+    require_permission(actor, "manufacturing.cancel_order", "إلغاء أمر الإنتاج")
+    require_staff(actor)
     with transaction.atomic():
         order = ProductionOrder.objects.select_for_update().get(pk=order.pk)
         if order.status in (ProductionOrder.Status.COMPLETED, ProductionOrder.Status.CANCELLED):
             raise ValidationError("لا يمكن إلغاء أمر مكتمل أو ملغي.")
+        order._allow_status_transition = True
         order.status = ProductionOrder.Status.CANCELLED
         order.cancelled_at = timezone.now()
         order.save(update_fields=["status", "cancelled_at", "updated_at"])

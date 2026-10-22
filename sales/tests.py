@@ -37,10 +37,17 @@ def _rounded_money(value):
 class SalesFixtureMixin:
     def create_fixture(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         suffix = uuid.uuid4().hex[:8].upper()
         self.staff = User.objects.create_user(
             username=f"sal-staff-{suffix}", password="test-password", is_staff=True
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff.user_permissions.set(perms)
         self.regular = User.objects.create_user(
             username=f"sal-reader-{suffix}", password="test-password"
         )

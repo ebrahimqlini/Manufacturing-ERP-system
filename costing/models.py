@@ -6,7 +6,7 @@ from datetime import date
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import connection, models, transaction
 from django.db.models import Q
 
 from catalog.models import Product, UnitOfMeasure
@@ -37,6 +37,63 @@ def ensure_profit_period_open(year, month, action_label):
             f"لا يمكن {action_label} لشهر {year}/{month:02d} بعد اعتماد نتيجة الشهر نهائيًا؛ "
             "أعد فتح فترة الأرباح والخسائر أولاً."
         )
+
+
+# --- Month-scoped closing locks -------------------------------------------
+# Every write that changes the financial contents of a calendar month must
+# serialize against the finalization of that month BEFORE it validates that the
+# month is still open. A plain ``select_for_update()`` is not sufficient on its
+# own: it locks nothing when the period row does not exist yet, so the very
+# first posting of a month could pass its "is the month open?" check against a
+# missing row and commit into a month that another transaction finalizes at the
+# same time. PostgreSQL transaction advisory locks exist whether or not any row
+# exists yet and are released automatically at commit or rollback.
+#
+# Locking protocol (used consistently by every period-sensitive writer):
+#   1. Acquire ``lock_costing_month(year, month)`` first, then, if the write
+#      also affects the profit period of the month, ``lock_profit_month``.
+#   2. Only afterwards acquire row locks (period rows, documents, inventory).
+#   3. Writers that affect only one of the two periods take only that lock;
+#      never acquire the costing lock after the profit lock (that would invert
+#      the order and could deadlock against finalize/reopen/reversal paths).
+# Both locks are re-entrant inside one transaction (PostgreSQL counts
+# acquisitions), so nested service calls (finalize -> calculate -> expense
+# save) never block on themselves.
+
+# Arbitrary but fixed per-app salts: "CP" for costing, "PF" for profit. They
+# keep the two lock families from ever colliding on the same 64-bit key.
+_COSTING_MONTH_LOCK_SALT = 0x43500001
+_PROFIT_MONTH_LOCK_SALT = 0x50460001
+
+
+def _month_advisory_key(salt, year, month):
+    return (salt << 32) | ((int(year) & 0xFFFFFFFF) << 8) | (int(month) & 0xFF)
+
+
+def _advisory_month_lock(salt, year, month):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            [_month_advisory_key(salt, year, month)],
+        )
+
+
+def lock_costing_month(year, month):
+    """Serialize every costing-affecting write for one calendar month.
+
+    Must be called inside ``transaction.atomic()``. Acquire it before the
+    profit-month lock and before any row lock.
+    """
+    _advisory_month_lock(_COSTING_MONTH_LOCK_SALT, year, month)
+
+
+def lock_profit_month(year, month):
+    """Serialize every profit-affecting write for one calendar month.
+
+    Must be called inside ``transaction.atomic()``. Always acquire the costing
+    month lock first when both periods are affected.
+    """
+    _advisory_month_lock(_PROFIT_MONTH_LOCK_SALT, year, month)
 
 
 class RawMaterialPrice(models.Model):
@@ -373,17 +430,30 @@ class MonthlyExpense(models.Model):
         if errors:
             raise ValidationError(errors)
 
+    def _lock_financial_months(self):
+        # An expense changes both the costing totals and the profit totals of
+        # its month, so it must serialize against the finalization of both
+        # periods before the open-period checks below run. The locks are only
+        # meaningful inside a transaction, so save/delete open one when the
+        # caller has not already.
+        lock_costing_month(self.year, self.month)
+        lock_profit_month(self.year, self.month)
+
     def save(self, *args, **kwargs):
-        ensure_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
-        ensure_profit_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
-        if self.expense_date is None and self.year and self.month:
-            self.expense_date = date(self.year, self.month, 1)
-        return super().save(*args, **kwargs)
+        with transaction.atomic():
+            self._lock_financial_months()
+            ensure_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
+            ensure_profit_period_open(self.year, self.month, "تعديل أو إضافة مصاريف")
+            if self.expense_date is None and self.year and self.month:
+                self.expense_date = date(self.year, self.month, 1)
+            return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        ensure_period_open(self.year, self.month, "حذف مصاريف")
-        ensure_profit_period_open(self.year, self.month, "حذف مصاريف")
-        return super().delete(*args, **kwargs)
+        with transaction.atomic():
+            self._lock_financial_months()
+            ensure_period_open(self.year, self.month, "حذف مصاريف")
+            ensure_profit_period_open(self.year, self.month, "حذف مصاريف")
+            return super().delete(*args, **kwargs)
 
     def __str__(self):
         return f"{self.year}/{self.month:02d} — {self.get_expense_type_display()} — {self.amount} ج.م"
@@ -525,6 +595,10 @@ class CostingPeriod(models.Model):
                 "view_costing_financials",
                 "Can view monthly costing financial data (periods, entries, expenses, prices)",
             ),
+            ("finalize_costing_period", "Can finalize monthly costing periods"),
+            ("reopen_costing_period", "Can reopen finalized costing periods"),
+            ("calculate_monthly_costing", "Can calculate monthly costing"),
+            ("manage_expenses", "Can create, edit, and reverse monthly expenses"),
         ]
         verbose_name = "فترة تكاليف شهرية"
         verbose_name_plural = "فترات التكاليف الشهرية"
@@ -973,6 +1047,11 @@ class MonthlyProfitPeriod(models.Model):
                 condition=Q(year__gte=2020) & Q(year__lte=2100),
                 name="monthly_profit_year_valid",
             ),
+        ]
+        permissions = [
+            ("finalize_monthly_profit", "Can finalize monthly profit periods"),
+            ("reopen_monthly_profit", "Can reopen finalized monthly profit periods"),
+            ("calculate_monthly_profit", "Can calculate monthly profit"),
         ]
         verbose_name = "فترة أرباح وخسائر شهرية"
         verbose_name_plural = "فترات الأرباح والخسائر الشهرية"

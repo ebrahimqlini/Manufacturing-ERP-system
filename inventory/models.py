@@ -104,6 +104,10 @@ class StockMovement(models.Model):
         constraints = [models.UniqueConstraint(fields=["source_reference_type", "source_reference_id"], condition=~models.Q(source_reference_type="") & ~models.Q(source_reference_id=""), name="unique_stock_source_reference")]
         verbose_name = "حركة مخزون"
         verbose_name_plural = "حركات المخزون"
+        permissions = [
+            ("post_movement", "Can post inventory movements"),
+            ("reverse_movement", "Can reverse inventory movements"),
+        ]
 
     def clean(self):
         errors = {}

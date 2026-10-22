@@ -20,7 +20,11 @@ from .models import (
     ProductionOrderCostingEntry,
     RawMaterialPrice,
     RollYieldStandard,
+    lock_costing_month,
+    lock_profit_month,
 )
+
+from core.permissions import require_permission, require_staff
 
 CENT = Decimal("0.01")
 FOUR_DECIMALS = Decimal("0.0001")
@@ -116,8 +120,7 @@ def _distribute_bucket(assignments, totals, field_map, temp_prefix):
 
 
 def _staff(actor):
-    if actor is not None and (not actor.is_authenticated or not actor.is_staff):
-        raise ValidationError("احتساب التكاليف متاح للمستخدمين المصرح لهم فقط.")
+    require_staff(actor)
 
 
 def _split_waste_material(material_cost, good_units, scrap_units, waste_policy):
@@ -260,20 +263,32 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
     the same movement is never counted in two periods. Reversed issues are
     excluded because their movement carries a reversal.
     """
-    _staff(actor)
-    if MonthlyProfitPeriod.objects.filter(
-        year=year,
-        month=month,
-        status=MonthlyProfitPeriod.Status.FINALIZED,
-    ).exists():
-        raise ValidationError(
-            "لا يمكن إعادة احتساب التكاليف بعد اعتماد نتيجة الشهر المالي؛ "
-            "أعد فتح فترة الأرباح والخسائر أولاً."
-        )
+    require_permission(actor, "costing.calculate_monthly_costing", "احتساب التكاليف الشهرية")
+    require_staff(actor)
     start_date, end_date = get_month_date_range(year, month)
 
     with transaction.atomic():
-        period, _ = CostingPeriod.objects.get_or_create(
+        # Month-scoped advisory locks (costing before profit, per the locking
+        # protocol in costing.models): serialize against finalization of both
+        # periods even when no period row exists yet, and make the profit
+        # check below a real pre-condition instead of a race-prone read.
+        lock_costing_month(year, month)
+        lock_profit_month(year, month)
+        if MonthlyProfitPeriod.objects.filter(
+            year=year,
+            month=month,
+            status=MonthlyProfitPeriod.Status.FINALIZED,
+        ).exists():
+            raise ValidationError(
+                "لا يمكن إعادة احتساب التكاليف بعد اعتماد نتيجة الشهر المالي؛ "
+                "أعد فتح فترة الأرباح والخسائر أولاً."
+            )
+        # get_or_create under a row lock plus the advisory month lock: the
+        # first concurrent calculation of a brand-new month creates the row
+        # (unique year/month constraint is the backstop); every later one
+        # serializes on the row and can never overwrite a concurrent
+        # finalization with a stale draft save.
+        period, _ = CostingPeriod.objects.select_for_update().get_or_create(
             year=year,
             month=month,
             defaults={
@@ -844,10 +859,17 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
 
 def finalize_costing_period(*, period, actor):
     """Finalize a monthly costing period after verifying its data is complete."""
+    require_permission(actor, "costing.finalize_costing_period", "اعتماد فترة التكاليف")
     if not actor or not actor.is_authenticated or not actor.is_staff:
         raise ValidationError("اعتماد فترة التكاليف متاح للمستخدمين المصرح لهم فقط.")
 
     with transaction.atomic():
+        # Locking protocol: costing month first, then profit month, before any
+        # row lock. This makes finalization mutually exclusive with every
+        # operational write and with a concurrent profit finalization, whether
+        # or not the period rows already exist.
+        lock_costing_month(period.year, period.month)
+        lock_profit_month(period.year, period.month)
         period = CostingPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status == CostingPeriod.Status.FINALIZED:
             raise ValidationError("هذه الفترة معتمدة نهائيًا بالفعل.")
@@ -873,12 +895,18 @@ def finalize_costing_period(*, period, actor):
 
 def reopen_costing_period(*, period, actor, reason):
     """Reopen a finalized period with a required audit reason."""
+    require_permission(actor, "costing.reopen_costing_period", "إعادة فتح فترة التكاليف")
     if not actor or not actor.is_authenticated or not actor.is_staff:
         raise ValidationError("إعادة فتح فترة التكاليف متاح للمستخدمين المصرح لهم فقط.")
     if not reason or not reason.strip():
         raise ValidationError({"reason": "سبب إعادة فتح فترة التكاليف إلزامي لتوثيق سجل التدقيق."})
 
     with transaction.atomic():
+        # Costing then profit month locks (locking protocol): reopening checks
+        # the profit status of the same month, so it must serialize against a
+        # concurrent profit finalization too.
+        lock_costing_month(period.year, period.month)
+        lock_profit_month(period.year, period.month)
         period = CostingPeriod.objects.select_for_update().get(pk=period.pk)
         if period.status != CostingPeriod.Status.FINALIZED:
             raise ValidationError("يمكن إعادة الفترات المعتمدة نهائيًا فقط.")

@@ -54,6 +54,23 @@ class MonthlyExpenseAdmin(admin.ModelAdmin):
         "updated_at",
     )
 
+    # The admin is an alternate entry point into the same data as the expense
+    # views, so it enforces the same explicit permission. Staff status or the
+    # default model permissions alone are not enough to create, edit, or
+    # remove a monthly expense. (Reversal is the documented removal path; a
+    # hard delete is kept only for users holding manage_expenses.)
+    def _manage_expenses(self, request):
+        return request.user.has_perm("costing.manage_expenses")
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and self._manage_expenses(request)
+
+    def has_change_permission(self, request, obj=None):
+        return super().has_change_permission(request, obj) and self._manage_expenses(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return super().has_delete_permission(request, obj) and self._manage_expenses(request)
+
 
 class ProductCostingEntryInline(admin.TabularInline):
     model = ProductCostingEntry

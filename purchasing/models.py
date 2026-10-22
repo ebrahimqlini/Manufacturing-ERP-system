@@ -117,6 +117,10 @@ class PurchaseOrder(models.Model):
         ]
         verbose_name = "أمر شراء"
         verbose_name_plural = "أوامر الشراء"
+        permissions = [
+            ("confirm_purchase_order", "Can confirm purchase orders"),
+            ("cancel_purchase_order", "Can cancel purchase orders"),
+        ]
 
     def __str__(self):
         return self.order_number
@@ -303,6 +307,9 @@ class PurchaseReceipt(models.Model):
         ]
         verbose_name = "استلام مشتريات"
         verbose_name_plural = "استلامات المشتريات"
+        permissions = [
+            ("create_receipt", "Can create purchase receipts"),
+        ]
 
     def clean(self):
         self.reference = (self.reference or "").strip()

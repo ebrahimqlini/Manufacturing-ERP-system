@@ -32,10 +32,17 @@ from .services import cancel_order, confirm_order, create_receipt, save_draft_or
 class PurchasingFixtureMixin:
     def create_fixture(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         suffix = uuid.uuid4().hex[:8].upper()
         self.staff = User.objects.create_user(
             username=f"pur-staff-{suffix}", password="test-password", is_staff=True
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff.user_permissions.set(perms)
         self.regular = User.objects.create_user(
             username=f"pur-reader-{suffix}", password="test-password"
         )

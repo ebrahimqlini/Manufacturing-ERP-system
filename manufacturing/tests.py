@@ -20,6 +20,7 @@ from .models import (
     BOMComponent,
     FinishedGoodsReceipt,
     MaterialIssue,
+    OperationProgress,
     ProductionLine,
     ProductionOperation,
     ProductionOrder,
@@ -47,8 +48,16 @@ from .services import (
 class ManufacturingFixtureMixin:
     def create_fixture(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         suffix = uuid.uuid4().hex[:8].upper()
         self.staff = User.objects.create_user(username=f"mfg-staff-{id(self)}", password="test-password", is_staff=True)
+        # Grant all manufacturing, inventory, costing, purchasing, sales permissions to staff
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff.user_permissions.set(perms)
         self.regular = User.objects.create_user(username=f"mfg-reader-{id(self)}", password="test-password")
         self.pcs = UnitOfMeasure.objects.create(code=f"P{suffix}", name_ar="قطعة", dimension="count")
         self.kg = UnitOfMeasure.objects.create(code=f"K{suffix}", name_ar="كجم", dimension="mass")
@@ -447,7 +456,7 @@ class ManufacturingWorkflowTests(ManufacturingFixtureMixin, TestCase):
         with self.assertRaisesMessage(ValidationError, "مرجع الصرف مستخدم"):
             issue_material(order=order, requirement=requirement, quantity=Decimal("5"), unit=self.kg,
                            reference="UNIQUE-ISSUE", actor=self.staff)
-        with self.assertRaisesMessage(ValidationError, "مستخدمي النظام الداخليين"):
+        with self.assertRaisesMessage(ValidationError, "ليس لديك صلاحية"):
             issue_material(order=order, requirement=requirement, quantity=Decimal("1"), unit=self.kg,
                            reference="UNAUTHORIZED-ISSUE", actor=self.regular)
         self.assertEqual(StockMovement.objects.count(), before)
@@ -600,3 +609,229 @@ class ManufacturingConcurrencyTests(ManufacturingFixtureMixin, TransactionTestCa
         self.assertCountEqual(results, ["posted", "rejected"])
         self.assertEqual(MaterialIssue.objects.filter(reference="RACE-SAME-REFERENCE").count(), 1)
         self.assertEqual(balance_for(self.material, self.location), Decimal("19.000000000000"))
+
+
+class ManufacturingPostedDocumentIntegrityTests(ManufacturingFixtureMixin, TestCase):
+    """ORM posted-document guards must block direct edits to posted documents
+    while leaving legitimate service transitions and draft editing intact.
+
+    Prompt 10.3 strengthens MaterialIssue / FinishedGoodsReceipt from
+    reversal-scoped to create-once (matching ProductionResult): reversal is
+    tracked on the linked StockMovement, never by editing the document row.
+    """
+
+    def setUp(self):
+        self.create_fixture()
+        # A released order with a posted material issue, a recorded production
+        # result, and an active finished-goods receipt — the create-once guard
+        # applies to all three from the moment they are posted.
+        self.order = self.create_order(quantity="1000")
+        release_order(order=self.order, actor=self.staff)
+        self.requirement = self.order.requirements.get()
+        self.receive_material_stock("50")
+        self.issue = issue_material(
+            order=self.order, requirement=self.requirement, quantity=Decimal("10"),
+            unit=self.kg, reference=f"INTEG-ISSUE-{uuid.uuid4().hex[:8]}", actor=self.staff,
+        )
+        self.result, _ = record_production_result(
+            order=self.order, actor=self.staff, good_quantity=Decimal("100"),
+            scrap_quantity=Decimal("0"), unit=self.pcs, notes="", occurred_at=timezone.now(),
+        )
+        self.receipt = receive_finished_goods(
+            order=self.order, quantity=Decimal("50"), unit=self.pcs,
+            destination_location=self.output_location,
+            reference=f"INTEG-RCV-{uuid.uuid4().hex[:8]}", actor=self.staff,
+        )
+
+    def test_legitimate_service_transitions_still_work(self):
+        # A fresh order walks the entire supported lifecycle; the guards must
+        # not block any service-driven transition.
+        order = self.create_order(quantity="500")
+        self.assertEqual(order.status, ProductionOrder.Status.DRAFT)
+        release_order(order=order, actor=self.staff)
+        order.refresh_from_db()
+        self.assertEqual(order.status, ProductionOrder.Status.RELEASED)
+
+        requirement = order.requirements.get()
+        self.receive_material_stock("20")
+        issue_material(
+            order=order, requirement=requirement, quantity=Decimal("5"), unit=self.kg,
+            reference=f"WF-ISSUE-{uuid.uuid4().hex[:8]}", actor=self.staff,
+        )
+        step = order.operations.get()
+        record_operation_progress(
+            order=order, order_operation=step, quantity=Decimal("10"),
+            unit=self.pcs, notes="", actor=self.staff,
+        )
+        complete_operation(order=order, order_operation=step, actor=self.staff)
+        record_production_result(
+            order=order, good_quantity=Decimal("50"), scrap_quantity=Decimal("0"),
+            unit=self.pcs, notes="", actor=self.staff, occurred_at=timezone.now(),
+        )
+        receive_finished_goods(
+            order=order, quantity=Decimal("50"), unit=self.pcs,
+            destination_location=self.output_location,
+            reference=f"WF-RCV-{uuid.uuid4().hex[:8]}", actor=self.staff,
+        )
+        complete_order(order=order, actor=self.staff)
+        order.refresh_from_db()
+        self.assertEqual(order.status, ProductionOrder.Status.COMPLETED)
+
+    def test_recorded_production_result_rejects_direct_orm_edits(self):
+        with self.assertRaisesMessage(ValidationError, "نتيجة الإنتاج المسجلة غير قابلة للتعديل"):
+            self.result.good_quantity = Decimal("999")
+            self.result.save()
+        with self.assertRaisesMessage(ValidationError, "نتيجة الإنتاج لا تُحذف"):
+            self.result.delete()
+        with self.assertRaises(ValidationError):
+            ProductionResult.objects.filter(pk=self.result.pk).update(notes="tampered")
+        with self.assertRaises(ValidationError):
+            ProductionResult.objects.filter(pk=self.result.pk).delete()
+        with self.assertRaises(ValidationError):
+            self.result.notes = "tampered"
+            ProductionResult.objects.bulk_update([self.result], ["notes"])
+        self.result.refresh_from_db()
+        self.assertEqual(self.result.good_quantity, Decimal("100"))
+        self.assertEqual(self.result.notes, "")
+
+    def test_recorded_operation_progress_rejects_direct_orm_edits(self):
+        step = self.order.operations.get()
+        progress, _ = record_operation_progress(
+            order=self.order, order_operation=step, quantity=Decimal("10"),
+            unit=self.pcs, notes="", actor=self.staff,
+        )
+        with self.assertRaisesMessage(ValidationError, "تقدم العملية المسجل غير قابل للتعديل"):
+            progress.notes = "x"
+            progress.save()
+        with self.assertRaisesMessage(ValidationError, "تقدم العملية لا يُحذف"):
+            progress.delete()
+        with self.assertRaises(ValidationError):
+            OperationProgress.objects.filter(pk=progress.pk).update(notes="x")
+        with self.assertRaises(ValidationError):
+            OperationProgress.objects.filter(pk=progress.pk).delete()
+
+    def test_released_order_and_snapshots_reject_direct_orm_edits(self):
+        # Instance-level: only a *status* change is blocked (the service owns
+        # lifecycle transitions); the queryset guard blocks any field write.
+        with self.assertRaisesMessage(ValidationError, "لا تتغير مباشرة"):
+            self.order.status = ProductionOrder.Status.CANCELLED
+            self.order.save()
+        with self.assertRaisesMessage(ValidationError, "لا يُحذف"):
+            self.order.delete()
+        with self.assertRaises(ValidationError):
+            ProductionOrder.objects.filter(pk=self.order.pk).update(planned_quantity=Decimal("1"))
+        with self.assertRaises(ValidationError):
+            ProductionOrder.objects.filter(pk=self.order.pk).delete()
+
+        req = self.order.requirements.get()
+        with self.assertRaisesMessage(ValidationError, "لا يُعدل"):
+            req.planned_quantity = Decimal("9999")
+            req.save()
+        with self.assertRaisesMessage(ValidationError, "لا يُحذف"):
+            req.delete()
+        with self.assertRaises(ValidationError):
+            type(req).objects.filter(pk=req.pk).update(planned_quantity=Decimal("1"))
+
+        op = self.order.operations.get()
+        with self.assertRaisesMessage(ValidationError, "لا تُعدل"):
+            op.instructions = "tampered"
+            op.save()
+        with self.assertRaisesMessage(ValidationError, "لا تُحذف"):
+            op.delete()
+        with self.assertRaises(ValidationError):
+            type(op).objects.filter(pk=op.pk).update(instructions="tampered")
+
+    def test_active_material_issue_rejects_direct_orm_edits(self):
+        # An active posted issue represents a real inventory ISSUE movement; it
+        # must be as immutable as a reversed one from the moment it is posted.
+        before_balance = balance_for(self.material, self.location)
+        before_movements = StockMovement.objects.count()
+        before_ledger = StockLedgerEntry.objects.count()
+        original_reference = self.issue.reference
+        original_quantity_base = self.issue.quantity_base
+
+        # Instance-level: save() on a persisted issue is rejected.
+        with self.assertRaisesMessage(ValidationError, "صرف المواد المرحلة غير قابل للتعديل"):
+            self.issue.quantity = Decimal("999")
+            self.issue.save()
+        # Instance-level: delete() is rejected.
+        with self.assertRaisesMessage(ValidationError, "لا يُحذف"):
+            self.issue.delete()
+        # Queryset-level: update() cannot bypass.
+        with self.assertRaises(ValidationError):
+            MaterialIssue.objects.filter(pk=self.issue.pk).update(reference="tampered")
+        # Queryset-level: delete() cannot bypass.
+        with self.assertRaises(ValidationError):
+            MaterialIssue.objects.filter(pk=self.issue.pk).delete()
+        # Bulk path: bulk_update() cannot bypass.
+        with self.assertRaises(ValidationError):
+            self.issue.quantity_base = Decimal("999")
+            MaterialIssue.objects.bulk_update([self.issue], ["quantity_base"])
+
+        # Rejected writes left no partial state: document, balances, movements,
+        # and ledger are all unchanged.
+        self.issue.refresh_from_db()
+        self.assertEqual(self.issue.quantity, Decimal("10"))
+        self.assertEqual(self.issue.reference, original_reference)
+        self.assertEqual(self.issue.quantity_base, original_quantity_base)
+        self.assertEqual(balance_for(self.material, self.location), before_balance)
+        self.assertEqual(StockMovement.objects.count(), before_movements)
+        self.assertEqual(StockLedgerEntry.objects.count(), before_ledger)
+
+    def test_active_finished_goods_receipt_rejects_direct_orm_edits(self):
+        before_balance = balance_for(self.product, self.output_location)
+        before_movements = StockMovement.objects.count()
+        before_ledger = StockLedgerEntry.objects.count()
+
+        with self.assertRaisesMessage(ValidationError, "استلام المنتج النهائي غير قابل للتعديل"):
+            self.receipt.quantity = Decimal("999")
+            self.receipt.save()
+        with self.assertRaisesMessage(ValidationError, "لا يُحذف"):
+            self.receipt.delete()
+        with self.assertRaises(ValidationError):
+            FinishedGoodsReceipt.objects.filter(pk=self.receipt.pk).update(reference="tampered")
+        with self.assertRaises(ValidationError):
+            FinishedGoodsReceipt.objects.filter(pk=self.receipt.pk).delete()
+        with self.assertRaises(ValidationError):
+            self.receipt.quantity_base = Decimal("999")
+            FinishedGoodsReceipt.objects.bulk_update([self.receipt], ["quantity_base"])
+
+        self.receipt.refresh_from_db()
+        self.assertEqual(self.receipt.quantity, Decimal("50"))
+        self.assertEqual(balance_for(self.product, self.output_location), before_balance)
+        self.assertEqual(StockMovement.objects.count(), before_movements)
+        self.assertEqual(StockLedgerEntry.objects.count(), before_ledger)
+
+    def test_service_reversal_still_works_and_reversed_documents_stay_frozen(self):
+        # Reversal is a service operation on the movement, not the document; it
+        # must keep working and leave the document row untouched (frozen).
+        original_quantity = self.issue.quantity
+        reversed_movement = reverse_movement(
+            movement=self.issue.movement, reference=f"REV-{uuid.uuid4().hex[:8]}",
+            actor=self.staff, reason="اختبار استمرار خدمة العكس",
+        )
+        self.assertIsNotNone(reversed_movement)
+        self.issue.refresh_from_db()
+        # The document row is unchanged by reversal (reversal lives on movement).
+        self.assertEqual(self.issue.quantity, original_quantity)
+        self.assertTrue(hasattr(self.issue.movement, "reversal"))
+
+        # Reversed document stays frozen on every write path.
+        with self.assertRaisesMessage(ValidationError, "صرف المواد المرحلة غير قابل للتعديل"):
+            self.issue.save()
+        with self.assertRaisesMessage(ValidationError, "لا يُحذف"):
+            self.issue.delete()
+        with self.assertRaises(ValidationError):
+            MaterialIssue.objects.filter(pk=self.issue.pk).update(reference="tampered")
+        with self.assertRaises(ValidationError):
+            MaterialIssue.objects.filter(pk=self.issue.pk).delete()
+
+    def test_draft_order_remains_editable(self):
+        draft = self.create_order(quantity="300")
+        draft.planned_quantity = Decimal("350")
+        draft.save()  # allowed: draft order
+        draft.refresh_from_db()
+        self.assertEqual(draft.planned_quantity, Decimal("350"))
+        pk = draft.pk
+        draft.delete()  # allowed: draft order
+        self.assertFalse(ProductionOrder.objects.filter(pk=pk).exists())

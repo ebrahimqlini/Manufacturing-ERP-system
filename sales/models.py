@@ -154,6 +154,11 @@ class SalesOrder(models.Model):
         ]
         verbose_name = "أمر بيع"
         verbose_name_plural = "أوامر البيع"
+        permissions = [
+            ("confirm_sales_order", "Can confirm sales orders"),
+            ("cancel_sales_order", "Can cancel sales orders"),
+            ("complete_sales_order", "Can complete sales orders"),
+        ]
 
     def __str__(self):
         return self.order_number
@@ -376,6 +381,9 @@ class Shipment(models.Model):
         ]
         verbose_name = "شحن مبيعات"
         verbose_name_plural = "شحنات المبيعات"
+        permissions = [
+            ("create_shipment", "Can create sales shipments"),
+        ]
 
     def clean(self):
         self.reference = (self.reference or "").strip()

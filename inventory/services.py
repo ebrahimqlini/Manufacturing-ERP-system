@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from catalog.models import Product, ProductUnitConversion
 from .models import InventoryLock, StockLedgerEntry, StockMovement, StorageLocation
+from core.permissions import require_permission, require_staff
 
 SCALE = Decimal("0.000000000001")
 
@@ -80,8 +81,8 @@ def post_movement(*, reference, movement_type, product, quantity, unit, actor,
                   source_location=None, destination_location=None, occurred_at=None,
                   external_reference="", source_reference_type="", source_reference_id="", reason="", notes=""):
     """Post one immutable, single-item event and its signed ledger legs atomically."""
-    if not actor or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("ترحيل حركات المخزون متاح للمستخدمين المصرح لهم فقط.")
+    require_permission(actor, "inventory.post_movement", "ترحيل حركة مخزون")
+    require_staff(actor)
     if not reference or not reference.strip():
         raise ValidationError({"reference": "المرجع الفريد مطلوب لمنع الترحيل المكرر."})
     if bool(source_reference_type) != bool(source_reference_id):
@@ -169,15 +170,41 @@ def _ensure_finalized_period_open_for_movement(movement):
 
 
 def reverse_movement(*, movement, reference, actor, reason):
-    if not actor or not actor.is_authenticated or not actor.is_staff:
-        raise ValidationError("عكس الحركات متاح للمستخدمين المصرح لهم فقط.")
+    require_permission(actor, "inventory.reverse_movement", "عكس حركة مخزون")
+    require_staff(actor)
     if not reason or not reason.strip():
         raise ValidationError({"reason": "سبب العكس مطلوب."})
     if movement.movement_type == StockMovement.Type.REVERSAL or movement.reversal_of_id:
         raise ValidationError("لا يمكن عكس حركة عكس؛ حركات العكس نهائية للحفاظ على سجل التدقيق.")
-    _ensure_finalized_period_open_for_movement(movement)
     original_entries = list(movement.ledger_entries.select_related("location", "location__warehouse"))
     with transaction.atomic():
+        # Month-scoped advisory locks: serialize against finalization of every
+        # financial month this reversal would change, before validating that
+        # those months are still open. Row locks alone are not enough: locking
+        # a period row with select_for_update() does nothing when the row does
+        # not exist yet. A material-issue reversal changes the costing month of
+        # the original movement; a shipment reversal changes the profit month
+        # of the shipment date (which may differ from the movement timestamp
+        # for a backdated shipment), so both dates are locked.
+        from costing.models import (
+            lock_costing_month,
+            lock_profit_month,
+        )
+
+        posting_date = timezone.localdate(movement.occurred_at)
+        lock_costing_month(posting_date.year, posting_date.month)
+        profit_months = {(posting_date.year, posting_date.month)}
+        if movement.source_reference_type == "sales.shipment":
+            from sales.models import Shipment
+
+            shipment = Shipment.objects.filter(
+                reference=movement.external_reference
+            ).only("shipment_date").first()
+            if shipment is not None:
+                profit_months.add((shipment.shipment_date.year, shipment.shipment_date.month))
+        for year, month in sorted(profit_months):
+            lock_profit_month(year, month)
+        _ensure_finalized_period_open_for_movement(movement)
         _lock_item_locations(movement.product, [entry.location for entry in original_entries])
         if hasattr(movement, "reversal"):
             raise ValidationError("تم عكس هذه الحركة من قبل.")

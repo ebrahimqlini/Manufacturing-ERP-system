@@ -56,11 +56,18 @@ class ConsolidatedReportFixture(TestCase):
         self.month_start = self.today.replace(day=1)
         self.suffix = uuid.uuid4().hex[:8]
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         self.owner = User.objects.create_user(
             username=f"report-owner-{self.suffix}",
             password="owner-test-password",
             is_staff=True,
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.owner.user_permissions.set(perms)
         self.non_staff = User.objects.create_user(
             username=f"report-viewer-{self.suffix}",
             password="viewer-test-password",
@@ -183,15 +190,14 @@ class ConsolidatedReportFixture(TestCase):
         )
 
         self.production_prior = self._create_production_output(
-            planned=Decimal("20"), good=Decimal("8"), scrap=Decimal("2")
-        )
-        ProductionOrder.objects.filter(pk=self.production_prior.pk).update(
+            planned=Decimal("20"), good=Decimal("8"), scrap=Decimal("2"),
             created_at=timezone.make_aware(
                 datetime.combine(
                     (self.today.replace(day=1) - timedelta(days=1)).replace(day=15),
                     time(12, 0),
                 )
-            )
+            ),
+            occurred_at=timezone.make_aware(datetime.combine(self.today, time(12, 0))),
         )
         self.production_open = ProductionOrder.objects.create(
             order_number=f"PRD2-{self.suffix}",
@@ -336,7 +342,8 @@ class ConsolidatedReportFixture(TestCase):
         )
         return receipt
 
-    def _create_production_output(self, *, planned, good, scrap):
+    def _create_production_output(self, *, planned, good, scrap, created_at=None, occurred_at=None):
+        from django.db import connection
         order = ProductionOrder.objects.create(
             order_number=f"PRD-{uuid.uuid4().hex[:10]}",
             product=self.finished,
@@ -349,6 +356,14 @@ class ConsolidatedReportFixture(TestCase):
             status=ProductionOrder.Status.IN_PROGRESS,
             created_by=self.owner,
         )
+        if created_at is not None:
+            # Bypass ORM update protection (auto_now_add prevents create() from setting created_at)
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    'UPDATE manufacturing_productionorder SET created_at = %s WHERE id = %s',
+                    [created_at, order.pk]
+                )
+            order.refresh_from_db()
         bom = BillOfMaterials.objects.create(
             product=self.finished,
             version=1,
@@ -399,6 +414,7 @@ class ConsolidatedReportFixture(TestCase):
             good_quantity_base=good,
             scrap_quantity_base=scrap,
             actor=self.owner,
+            occurred_at=occurred_at or created_at or timezone.now(),
         )
         return order
 
@@ -559,6 +575,7 @@ class ProductionReportTests(ConsolidatedReportFixture):
             good_quantity_base=Decimal("5"),
             scrap_quantity_base=Decimal("1"),
             actor=self.owner,
+            occurred_at=timezone.make_aware(datetime.combine(self.today, time(12, 0))),
         )
 
         all_report = production_report(self.month_start, self.today, "day", 5, 20)

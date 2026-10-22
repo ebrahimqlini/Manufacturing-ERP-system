@@ -56,12 +56,19 @@ from costing.services import (
 class CostingFixtureMixin:
     def create_costing_fixture(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         suffix = uuid.uuid4().hex[:8].upper()
         self.staff_user = User.objects.create_user(
             username=f"cost-staff-{suffix}",
             password="test-password",
             is_staff=True,
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff_user.user_permissions.set(perms)
         self.regular_user = User.objects.create_user(
             username=f"cost-regular-{suffix}",
             password="test-password",
@@ -1077,9 +1084,8 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
             )
         result, _ = record_production_result(
             order=order, good_quantity=good_qty, scrap_quantity=scrap_qty, unit=self.pcs,
-            actor=self.staff_user, notes="نتيجة تاريخية",
+            actor=self.staff_user, notes="نتيجة تاريخية", occurred_at=target,
         )
-        ProductionResult.objects.filter(pk=result.pk).update(occurred_at=target)
         return order
 
     def _backdate_prices(self, year):

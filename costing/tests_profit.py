@@ -42,11 +42,18 @@ class ProfitFixtureMixin:
     def setup_profit_fixture(self):
         suffix = uuid.uuid4().hex[:8]
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         self.owner = User.objects.create_user(
             username=f"profit-owner-{suffix}",
             password="test-password",
             is_staff=True,
         )
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.owner.user_permissions.set(perms)
         self.viewer = User.objects.create_user(
             username=f"profit-viewer-{suffix}",
             password="test-password",

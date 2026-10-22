@@ -16,7 +16,14 @@ from .services import balance_for, post_movement, reverse_movement, to_base_quan
 class InventoryLedgerTests(TestCase):
     def setUp(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         self.staff = User.objects.create_user(username="staff", password="test-password", is_staff=True)
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff.user_permissions.set(perms)
         self.regular = User.objects.create_user(username="reader", password="test-password")
         self.unit = UnitOfMeasure.objects.create(code="PCS", name_ar="قطعة", dimension="count")
         category, _ = ProductCategory.objects.get_or_create(code="raw-material", defaults={"name_ar": "مواد خام"})
@@ -265,7 +272,14 @@ class InventoryConcurrencyTests(TransactionTestCase):
 
     def setUp(self):
         User = get_user_model()
+        from django.contrib.auth.models import Permission
         self.staff = User.objects.create_user(username="concurrent", password="test-password", is_staff=True)
+        perms = Permission.objects.filter(
+            content_type__app_label__in=[
+                "manufacturing", "inventory", "costing", "purchasing", "sales"
+            ]
+        )
+        self.staff.user_permissions.set(perms)
         unit = UnitOfMeasure.objects.create(code="PCS", name_ar="قطعة", dimension="count")
         category, _ = ProductCategory.objects.get_or_create(code="raw-material", defaults={"name_ar": "مواد خام"})
         self.product = Product.objects.create(sku="CONC-RAW", name_ar="مادة خام", category=category, base_uom=unit)
