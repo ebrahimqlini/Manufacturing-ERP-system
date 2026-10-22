@@ -1635,11 +1635,12 @@ def production_report(
             "order_count": row["order_count"],
         })
 
-    results = ProductionResult.objects.filter(
+    # All results in the period (for output, consumption, yield calculations)
+    all_results_in_period = ProductionResult.objects.filter(
         occurred_at__date__range=(start, end), **result_filter
-    )
+    ).select_related("order", "order__production_line", "order__product", "unit")
     output_rows = list(
-        results.values(
+        all_results_in_period.values(
             "order__production_line_id",
             "order__production_line__code",
             "order__production_line__name_ar",
@@ -1791,18 +1792,22 @@ def production_report(
         .filter(_has_result=False)
         .count()
     )
-    cross_period_output_count = results.filter(order__created_at__date__lt=start).count()
+
+    # Cross-period results: results in period for orders created before this
+    # period, matching the documented cross_period_basis. The base queryset
+    # already carries select_related, so the trend and recent-result rows below
+    # reuse it without rebuilding the query.
+    cross_period_results = all_results_in_period.filter(order__created_at__date__lt=start)
+    cross_period_output_count = cross_period_results.count()
     buckets = _bucket_dates(start, end, granularity)
     output_trend = _trend_rows(
-        results,
+        all_results_in_period,
         "occurred_at",
         "good_quantity_base",
         granularity,
         "order_id",
     )
-    recent_results = results.select_related(
-        "order", "order__product", "order__production_line", "unit"
-    ).order_by("-occurred_at", "-pk")[:recent_limit]
+    recent_results = all_results_in_period.order_by("-occurred_at", "-pk")[:recent_limit]
     recent_orders = (
         orders_in_period.select_related("product", "product__base_uom", "production_line")
         .order_by("-created_at", "-pk")[:recent_limit]
