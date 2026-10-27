@@ -28,7 +28,9 @@
 - [x] Test route/BOM snapshots, partial issues, shortage and stock limits, good/scrap quantities, finished receipts, order limits, authorization, and database behavior.
 - [x] Defer WIP balances/transfers because factory policy is unconfirmed.
 - [x] Implement monthly product costing (actual material issues with owner-entered provisional prices; labor/electricity/water/other allocated by policy; waste handling; per-product/per-order breakdowns; cross-month comparison; draft/finalize/reopen).
-- [ ] Obtain owner/accountant approval of the material valuation method and waste treatment before treating costing output as accounting-final; confirm the WIP location/transfer policy and fiber inputs/stages before extending workflows.
+- [ ] Confirm the WIP location/transfer policy and fiber inputs/stages before extending workflows; accounting treatment beyond the approved LPC management-costing basis remains future work.
+- [x] Prompt 12: use LPC per material from genuine, successfully posted purchase receipts; snapshot issue-time cost and keep a dated standard price as a labeled fallback.
+- [x] Prompt 12 remediation code: immutable measured material-waste records, event-time LPC/fallback snapshots, explicit reviewed-zero evidence, and audited waste/result reversals.
 
 ## Production costing — monthly product cost (implemented; verification in IMPLEMENTATION_STATUS.md)
 
@@ -45,7 +47,7 @@
 - [x] Add `purchasing` models, services, views, admin, Arabic RTL templates, and migration `0001_initial` for suppliers, purchase orders, and receipts.
 - [x] Keep purchase orders as commercial documents and post receipts only through the shared inventory ledger with unit-conversion validation and atomic rollback.
 - [x] Support partial/complete receiving with derived received/outstanding quantities, duplicate-reference and over-receipt prevention, and reversal-based correction.
-- [x] Snapshot purchase prices for traceability without changing `RawMaterialPrice` or the costing valuation method.
+- [x] Snapshot purchase prices and update LPC only after genuine receipt lines successfully post; issue costs retain immutable LPC/source snapshots.
 - [x] Restrict all purchasing pages and writes to staff users and hide the navigation link from other users.
 - [x] Ran `manage.py check`, `makemigrations --check --dry-run`, and the full PostgreSQL suite with `--keepdb` (123 tests, zero skips, `test_paper_factory` preserved; `paper_factory` never targeted).
 
@@ -75,7 +77,8 @@
 - [x] Add `Product.available_to_customers` and `Product.low_stock_threshold`, link `Customer.user`, and record `SalesOrder.customer_submitted` through migrations; update staff forms/admin.
 - [x] Add API tests for authentication, role boundaries, customer isolation, catalog exclusions, pagination, invalid input/error envelopes, order-request workflow effects, dashboard metrics, low stock, production, persisted costing, financial-integrity nulls, and no-store behavior.
 - [x] Ran `manage.py check`, `makemigrations --check --dry-run`, focused API tests, and the full PostgreSQL suite with `--keepdb` (193 tests, zero skips, `test_paper_factory` preserved; `paper_factory` never targeted).
-- [ ] Future mobile work (not Prompt 6): Flutter apps, push/live refresh transport, customer order-request idempotency keys, customer registration/password reset, and any customer-facing order cancellation policy.
+- [x] Flutter Android MVP (Prompt 13B) under `mobile/`, using secure token storage, server-derived roles, real API IDs, and debug-only cleartext HTTP (see `mobile/README.md`).
+- [ ] Future mobile work: iOS/web builds, push/live refresh transport, customer order-request idempotency keys, customer registration/password reset, and any customer-facing order cancellation policy.
 - [ ] Future accounting work: shared chart of accounts, invoices, returns/credit notes, payments, tax, receivables, payables, cash, and validated postings. Until then dashboard profit/position metrics remain intentionally unavailable.
 
 ## Prompt 6.1 — targeted hardening (implemented; verification in IMPLEMENTATION_STATUS.md)
@@ -120,12 +123,16 @@
 
 ## Later prompts
 
+- [x] Prompt 12: Last Purchase Cost per material, system posting-time history, source-authentic receipt updates, issue-time snapshots, and historical reversal behavior (see `IMPLEMENTATION_STATUS.md`).
+- [x] Verify Prompt 12 remediation on PostgreSQL after restoring a usable psycopg/libpq runtime; do not use SQLite for PostgreSQL locking guarantees.
+
 - [ ] Shared accounting foundation with consolidated and production-line cost dimensions (originally labelled "Prompt 3"; the production-costing work above is the separate costing prompt).
 - [x] Prompt 4: shared supplier/purchasing/receiving workflows against the common inventory ledger (implemented; see the section above). Supplier invoices, payments, tax, and accounting postings remain deferred to the accounting phase.
 - [x] Prompt 5: shared customer/sales/delivery workflows against the common inventory interface (implemented; see the section above). Customer invoices, returns, payments, tax, and accounting postings remain deferred to the accounting phase.
 - [x] Prompt 6: versioned mobile API foundation and owner dashboard data (implemented; see the section above). Consolidated reporting was implemented separately in Prompt 7.
 - [x] Prompt 7: read-only factory-wide and production-line reports, with reconciled consolidated totals (implemented; see the section above).
 - [x] Prompt 8: monthly management profit, operating expenses, and loss carry-forward (implemented; see the section above).
+- [x] Prompt 13B: Flutter Android MVP against the real API, secure token storage, debug-only cleartext, real API IDs, Flutter tests, and a verified debug APK (see `IMPLEMENTATION_STATUS.md` and `mobile/README.md`). iOS, Flutter web, and a signed release APK remain future work.
 - [ ] Future deployment work: approved authorization matrix, backup/restore automation, monitoring, and deployment hardening.
 
 See [PROMPT_SPECS.md](PROMPT_SPECS.md) for scope, acceptance gates, and required tests for every planned prompt. See [DECISIONS.md](DECISIONS.md) for architecture and unresolved factory/accounting policies.

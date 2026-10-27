@@ -4,6 +4,7 @@ from .models import (
     BillOfMaterials,
     BOMComponent,
     FinishedGoodsReceipt,
+    MachineCounterReading,
     MaterialIssue,
     OperationProgress,
     ProductionLine,
@@ -24,9 +25,9 @@ class NoDeleteAdminMixin:
 
 @admin.register(ProductionLine)
 class ProductionLineAdmin(NoDeleteAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name_ar", "active")
+    list_display = ("code", "name_ar", "active", "counter_behavior")
     search_fields = ("code", "name_ar", "name_en")
-    list_filter = ("active",)
+    list_filter = ("active", "counter_behavior")
 
 
 @admin.register(ProductionOperation)
@@ -97,5 +98,5 @@ class ReadOnlyRecordsAdmin(admin.ModelAdmin):
 
 for model in (BOMComponent, ProductionMaterialRequirement, ProductionOrderOperation,
               MaterialIssue, OperationProgress, ProductionResult, FinishedGoodsReceipt,
-              RoutingStep):
+              RoutingStep, MachineCounterReading):
     admin.site.register(model, ReadOnlyRecordsAdmin)

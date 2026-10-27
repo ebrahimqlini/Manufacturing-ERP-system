@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from decimal import Decimal
 from threading import Barrier
 import uuid
@@ -39,10 +40,15 @@ from .services import (
     order_summary,
     record_operation_progress,
     record_production_result,
+    record_production_material_waste,
+    confirm_no_material_waste,
+    reverse_production_result,
+    reverse_production_material_waste,
     release_order,
     requirement_status,
     save_draft_order,
 )
+from .counter_services import start_counter_interval
 
 
 class ManufacturingFixtureMixin:
@@ -515,6 +521,35 @@ class ManufacturingConcurrencyTests(ManufacturingFixtureMixin, TransactionTestCa
         self.receive_material_stock("10")
 
     @skipUnlessDBFeature("has_select_for_update")
+    def test_concurrent_counter_starts_on_different_orders_share_line_lock(self):
+        first = self.order
+        second = self.create_order(quantity="100")
+        release_order(order=second, actor=self.staff)
+        barrier = Barrier(2)
+        started_at = timezone.now()
+
+        def attempt(order_id):
+            close_old_connections()
+            try:
+                actor = get_user_model().objects.get(pk=self.staff.pk)
+                order = ProductionOrder.objects.select_related("production_line").get(pk=order_id)
+                barrier.wait(timeout=10)
+                try:
+                    start_counter_interval(
+                        actor=actor, order=order, production_line=order.production_line,
+                        unit=self.pcs, start_reading=Decimal("100"), started_at=started_at,
+                    )
+                    return "posted"
+                except ValidationError:
+                    return "rejected"
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(attempt, (first.pk, second.pk)))
+        self.assertCountEqual(outcomes, ["posted", "rejected"])
+
+    @skipUnlessDBFeature("has_select_for_update")
     def test_concurrent_issues_cannot_exceed_order_requirement_or_available_stock(self):
         barrier = Barrier(2)
 
@@ -835,3 +870,72 @@ class ManufacturingPostedDocumentIntegrityTests(ManufacturingFixtureMixin, TestC
         pk = draft.pk
         draft.delete()  # allowed: draft order
         self.assertFalse(ProductionOrder.objects.filter(pk=pk).exists())
+
+class ProductionEvidenceTests(ManufacturingFixtureMixin, TestCase):
+    def setUp(self):
+        self.create_fixture()
+        self.order = self.create_order()
+        release_order(order=self.order, actor=self.staff)
+        self.receive_material_stock("200")
+        self.issue = issue_material(
+            order=self.order, requirement=self.order.requirements.get(),
+            quantity=Decimal("100"), unit=self.kg,
+            reference=f"WASTE-ISSUE-{uuid.uuid4().hex[:8]}", actor=self.staff,
+        )
+        self.result, _ = record_production_result(
+            order=self.order, good_quantity=Decimal("900"), scrap_quantity=Decimal("100"),
+            unit=self.pcs, notes="", actor=self.staff, occurred_at=timezone.now() - timedelta(days=60),
+        )
+
+    def test_material_waste_keeps_missing_event_valuation_and_explicit_review(self):
+        from .models import ProductionMaterialWaste
+        waste = record_production_material_waste(
+            result=self.result, material=self.material, quantity_base=Decimal("2"),
+            material_issue=self.issue, actor=self.staff,
+        )
+        self.assertEqual(waste.cost_source, ProductionMaterialWaste.CostSource.UNAVAILABLE)
+        self.assertIsNone(waste.total_cost_snapshot)
+        with self.assertRaises(ValidationError):
+            ProductionMaterialWaste.objects.filter(pk=waste.pk).update(quantity_base=Decimal("3"))
+        with self.assertRaises(ValidationError):
+            confirm_no_material_waste(result=self.result, actor=self.staff)
+        zero_order = self.create_order()
+        release_order(order=zero_order, actor=self.staff)
+        zero_result, _ = record_production_result(
+            order=zero_order, good_quantity=Decimal("1"), scrap_quantity=Decimal("0"),
+            unit=self.pcs, notes="مراجعة صفر هالك", actor=self.staff,
+        )
+        review = confirm_no_material_waste(result=zero_result, actor=self.staff)
+        self.assertEqual(review.result_id, zero_result.pk)
+        with self.assertRaises(ValidationError):
+            confirm_no_material_waste(result=zero_result, actor=self.staff)
+
+    def test_waste_uses_event_valid_dated_fallback_and_reversal_keeps_snapshot(self):
+        from costing.models import RawMaterialPrice
+        from .models import ProductionMaterialWaste
+        RawMaterialPrice.objects.create(
+            material=self.material, price_per_unit=Decimal("4"), unit=self.kg,
+            effective_date=timezone.localdate(), created_by=self.staff,
+        )
+        waste = record_production_material_waste(
+            result=self.result, material=self.material, quantity_base=Decimal("2"),
+            material_issue=self.issue, actor=self.staff,
+        )
+        self.assertEqual(waste.cost_source, ProductionMaterialWaste.CostSource.STANDARD_PRICE_FALLBACK)
+        self.assertEqual(waste.total_cost_snapshot, Decimal("8.00"))
+        reversal = reverse_production_material_waste(
+            waste=waste, actor=self.staff, reason="تصحيح القياس الميداني",
+        )
+        self.assertEqual(reversal.reversal_of_id, waste.pk)
+        self.assertEqual(reversal.total_cost_snapshot, waste.total_cost_snapshot)
+
+    def test_result_reversal_preserves_original_and_removes_it_from_active_totals(self):
+        reversal = reverse_production_result(
+            result=self.result, actor=self.staff, reason="تصحيح كمية مدخلة بالخطأ",
+        )
+        self.assertEqual(reversal.result_id, self.result.pk)
+        self.result.refresh_from_db()
+        self.assertEqual(self.result.good_quantity_base, Decimal("900"))
+        self.assertEqual(order_summary(self.order)["good"], Decimal("0"))
+        with self.assertRaises(ValidationError):
+            reverse_production_result(result=self.result, actor=self.staff, reason="محاولة ثانية")

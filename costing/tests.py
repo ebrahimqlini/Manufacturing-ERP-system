@@ -2,6 +2,7 @@ from decimal import Decimal
 import calendar
 import uuid
 from datetime import date, datetime
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -29,8 +30,10 @@ from manufacturing.models import (
 from manufacturing.services import (
     complete_operation,
     complete_order,
+    confirm_no_material_waste,
     issue_material,
     receive_finished_goods,
+    record_production_material_waste,
     record_operation_progress,
     record_production_result,
     release_order,
@@ -381,7 +384,10 @@ class CostingProductionMixin(CostingFixtureMixin):
             sequence=10,
         )
 
-    def _create_production_run(self, product, line, planned_qty, actual_paper_kg, actual_foil_rolls, good_qty, scrap_qty):
+    def _create_production_run(
+        self, product, line, planned_qty, actual_paper_kg, actual_foil_rolls,
+        good_qty, scrap_qty, *, measured_waste_base=None, review_material_waste=True,
+    ):
         """Helper to create and complete a realistic production run with actual issues and outputs."""
         order = save_draft_order(
             actor=self.staff_user,
@@ -428,7 +434,7 @@ class CostingProductionMixin(CostingFixtureMixin):
             actor=self.staff_user,
         )
         complete_operation(order=order, order_operation=op_step, actor=self.staff_user)
-        record_production_result(
+        result, _ = record_production_result(
             order=order,
             good_quantity=good_qty,
             scrap_quantity=scrap_qty,
@@ -436,6 +442,15 @@ class CostingProductionMixin(CostingFixtureMixin):
             actor=self.staff_user,
             notes="Run result",
         )
+        if measured_waste_base is not None:
+            material = self.raw_paper
+            material_issue = order.material_issues.get(requirement__material=material)
+            record_production_material_waste(
+                result=result, material=material, quantity_base=Decimal(measured_waste_base),
+                material_issue=material_issue, actor=self.staff_user,
+            )
+        elif review_material_waste:
+            confirm_no_material_waste(result=result, actor=self.staff_user)
         if good_qty > 0:
             receive_finished_goods(
                 order=order,
@@ -461,6 +476,7 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             actual_foil_rolls=Decimal("2"),
             good_qty=Decimal("95"),
             scrap_qty=Decimal("5"),
+            review_material_waste=False,
         )
 
         # Electricity and water are required utilities for a month with
@@ -493,7 +509,8 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
         # Total material cost = 12,900 EGP
         self.assertEqual(entry.actual_material_cost, Decimal("12900.00"))
         self.assertEqual(period.materials_total, Decimal("12900.00"))
-        self.assertTrue(period.is_complete)
+        self.assertFalse(period.is_complete)
+        self.assertIn("لم تُسجل قياسات الهالك المادي", period.missing_data_notes)
 
     def test_finalization_recalculates_a_stale_draft_before_freezing(self):
         self._create_production_run(
@@ -547,7 +564,9 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
         self.assertEqual(entry.good_units_produced, Decimal("150"))
 
     def test_missing_material_price_flags_incomplete_status(self):
-        # Create an order with raw_paper and raw_foil
+        # The cost snapshot is captured at issue time, so a missing price must
+        # be absent BEFORE the material is issued for the production run.
+        RawMaterialPrice.objects.filter(material=self.raw_foil).delete()
         self._create_production_run(
             product=self.product_a,
             line=self.line_1,
@@ -557,9 +576,6 @@ class CostingCalculationTests(CostingProductionMixin, TestCase):
             good_qty=Decimal("50"),
             scrap_qty=Decimal("0"),
         )
-
-        # Delete foil price
-        RawMaterialPrice.objects.filter(material=self.raw_foil).delete()
 
         period = calculate_monthly_costing(year=self.year, month=self.month, actor=self.staff_user)
         self.assertFalse(period.is_complete)
@@ -1069,23 +1085,37 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
                 continue
             requirement = order.requirements.filter(material=material).first()
             issue_id = uuid.uuid4()
-            movement = post_movement(
-                reference=f"MFG-I-{issue_id.hex}", movement_type=StockMovement.Type.ISSUE,
-                product=material, quantity=quantity, unit=unit, actor=self.staff_user,
-                source_location=self.raw_location, occurred_at=target,
-                source_reference_type="manufacturing.material_issue", source_reference_id=str(issue_id),
-                reason=f"صرف تاريخي {order.order_number}",
+            with mock.patch("django.utils.timezone.now", return_value=target):
+                movement = post_movement(
+                    reference=f"MFG-I-{issue_id.hex}", movement_type=StockMovement.Type.ISSUE,
+                    product=material, quantity=quantity, unit=unit, actor=self.staff_user,
+                    source_location=self.raw_location, occurred_at=target,
+                    source_reference_type="manufacturing.material_issue", source_reference_id=str(issue_id),
+                    reason=f"صرف تاريخي {order.order_number}",
+                )
+                unit_cost_snapshot = None
+                cost_source = MaterialIssue.CostSource.UNAVAILABLE
+                applicable_price = (
+                    RawMaterialPrice.objects.filter(material=material, effective_date__lte=target.date())
+                    .order_by("-effective_date", "-created_at")
+                    .first()
+                )
+                if applicable_price is not None:
+                    unit_cost_snapshot = applicable_price.price_per_base_unit
+                    cost_source = MaterialIssue.CostSource.STANDARD_PRICE_FALLBACK
+                MaterialIssue.objects.create(
+                    id=issue_id, order=order, requirement=requirement,
+                    reference=f"HIST-{issue_id.hex[:10]}", movement=movement,
+                    quantity=quantity, unit=unit,
+                    quantity_base=to_base_quantity(material, quantity, unit), actor=self.staff_user,
+                    unit_cost_snapshot=unit_cost_snapshot, cost_source=cost_source,
+                )
+        with mock.patch("django.utils.timezone.now", return_value=target):
+            result, _ = record_production_result(
+                order=order, good_quantity=good_qty, scrap_quantity=scrap_qty, unit=self.pcs,
+                actor=self.staff_user, notes="نتيجة تاريخية", occurred_at=target,
             )
-            MaterialIssue.objects.create(
-                id=issue_id, order=order, requirement=requirement,
-                reference=f"HIST-{issue_id.hex[:10]}", movement=movement,
-                quantity=quantity, unit=unit,
-                quantity_base=to_base_quantity(material, quantity, unit), actor=self.staff_user,
-            )
-        result, _ = record_production_result(
-            order=order, good_quantity=good_qty, scrap_quantity=scrap_qty, unit=self.pcs,
-            actor=self.staff_user, notes="نتيجة تاريخية", occurred_at=target,
-        )
+            confirm_no_material_waste(result=result, actor=self.staff_user)
         return order
 
     def _backdate_prices(self, year):
@@ -1543,6 +1573,7 @@ class CostingUtilityExpenseTests(CostingProductionMixin, TestCase):
             product=self.product_b, line=self.line_2,
             planned_qty=Decimal("150"), actual_paper_kg=Decimal("500"),
             actual_foil_rolls=Decimal("0"), good_qty=Decimal("100"), scrap_qty=Decimal("50"),
+            measured_waste_base=Decimal("166.666666666667"),
         )
 
         self._add_expense(self.year, self.month, MonthlyExpense.ExpenseType.LABOR, Decimal("1000.00"))

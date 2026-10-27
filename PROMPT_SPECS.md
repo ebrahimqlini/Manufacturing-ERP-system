@@ -1,6 +1,6 @@
 # Future implementation prompt specifications
 
-These phase contracts record the approved scope. Prompts 1 and 2 (catalog/inventory and configurable production), monthly production costing, Prompt 4 (purchasing), Prompt 5 (sales), and Prompt 6 (secure mobile API and owner dashboard data) are implemented in this checkout; the remaining prompts are planned. Every phase must stay within its prompt and must not silently decide open factory or accounting policies.
+These phase contracts record the approved scope. Prompts 1 and 2, monthly production costing, Prompts 4–8, and Prompt 11 are implemented in this checkout. Prompt 12 LPC work is implemented with the remaining event-time waste limitation documented below. Every phase must stay within its prompt and must not silently decide open factory or accounting policies.
 
 ## Shared factory scope
 
@@ -9,7 +9,7 @@ The ERP serves two production lines:
 - **Paper cups.** Configure product-specific operations from the confirmed process: printing, cutting, cup forming, bottom assembly where applicable, and packaging.
 - **Paper-fiber food containers/trays.** The confirmed process fact is pressing fiber material in a mold. Do not infer drying, pulp production, heating, trimming, other stages, raw-material specifications, machines, units, yields, or rates. Keep product BOMs and routings configurable and unpopulated until factory data is supplied.
 
-Catalog, inventory, warehouses, stock ledger, purchasing, suppliers, customers, sales, accounting, and reporting are shared across both lines. Never implement separate copies of those modules or ledgers per line. Production line is an attribution/configuration dimension, not a second stock system. Use `Decimal` values for exact quantities and money. Do not choose valuation, costing, rounding, tax, or accounting-posting policies without owner/accountant approval. The factory has confirmed that physical inventory must never become negative; this does not require a production order's full planned materials to be available.
+Catalog, inventory, warehouses, stock ledger, purchasing, suppliers, customers, sales, accounting, and reporting are shared across both lines. Never implement separate copies of those modules or ledgers per line. Production line is an attribution/configuration dimension, not a second stock system. Use `Decimal` values for exact quantities and money. LPC is the approved material valuation basis; other valuation, costing, rounding, tax, and accounting-posting policies require owner/accountant approval. The factory has confirmed that physical inventory must never become negative; this does not require a production order's full planned materials to be available.
 
 ## Prompt 1 — Catalog, units, warehouses, and shared inventory
 
@@ -77,11 +77,12 @@ Calculate per-product manufacturing cost for each calendar month from actual pro
 
 ### Required design
 
-- Material cost is derived from actual material issues dated within the month (reversed issues excluded), priced with owner-entered `RawMaterialPrice` rows. Because no valuation method is approved and the ledger carries no cost, the price is a labelled provisional standard; FIFO/weighted average are not used, and a missing or future-dated price is reported and marks the period incomplete instead of being silently reused.
+- Material cost is derived from non-reversed material issues in the month, using each issue's immutable LPC snapshot at issue posting time. A dated owner-entered `RawMaterialPrice` is an explicitly labeled fallback only when no LPC applies. A missing price is reported and marks the period incomplete; historical lookups never use a later receipt or current LPC. LPC becomes available at successful system posting time, not at a backdated receipt date. FIFO and Moving Weighted Average are not used.
 - Record monthly operating expenses with a type (labor, electricity, water, other industrial) and a scope (factory, production line, or product). Labor, electricity, and water are required for any producing month; a missing record is flagged and blocks finalization rather than being assumed zero. A deliberately recorded `0.00` is a confirmed zero, kept distinct from a missing one. Bills are attributed wholly to the operator-selected month, and the model documents that a bill's period may differ from its consumption month.
-- Each period stores explicit `start_date`/`end_date` boundaries; material issues and production results are attributed by those boundaries, and recalculation replaces a month's entries without affecting other months.
+- Each period stores explicit `start_date`/`end_date` boundaries; material issues and production results are attributed by system posting time. Operator-entered production dates remain operational display fields. Legacy results without a trustworthy posting time remain unavailable and are reported incomplete.
 - Allocate factory-wide expenses with the period policy (units produced, material cost, material weight, or equal-per-line then units); attribute line- and product-scoped expenses directly. Allocation parts must sum exactly to each recorded bucket total.
-- The waste policy must change the computed result: absorbed normal waste loads full material cost on good units; separate abnormal waste splits material cost between good output and recorded scrap in proportion to recorded quantities and shows it separately.
+- Material waste is recorded as an immutable measured base-unit quantity linked to its production result, order, and raw material, with an optional reliable issue/roll reference. The system snapshots LPC at posting time or a valid earlier-dated fallback; no price remains unvalued and incomplete. A separate immutable review record distinguishes reviewed zero waste from missing evidence. Unreviewed output scrap and unvalued waste block costing completeness. No material waste is inferred from finished-output rejection, counters, yield, leftovers, or unexplained issues. Usable roll remnants remain inventory.
+- Production results remain immutable; a staff-only audited full reversal records actor, time, and reason, and corrected quantities are posted as a new result. Reversal is blocked until applicable costing and profit periods are reopened.
 - Product entries are computed from production-order entries so order, product, and period totals reconcile exactly. Provide per-product and per-order breakdowns, recorded-vs-allocated reconciliation, separate labor/electricity/water columns, and a cross-month comparison that selects one product and shows its monthly material/labor/utility/other/waste/total, cost per good unit, production and waste quantities, and month-over-month changes. Fallback allocations and missing good-unit costs remain explicitly incomplete. Periods move draft → finalized, and reopening a finalized period requires a recorded reason.
 - Costing exposes financial data, so its read pages are limited to staff users or users explicitly granted the `costing.view_costing_financials` permission; ordinary authenticated users are refused. Write actions remain staff-only. The permission is never auto-assigned.
 
@@ -92,12 +93,30 @@ Calculate per-product manufacturing cost for each calendar month from actual pro
 - Each month uses its own recorded expenses with no carry-forward; factory/line/product scopes allocate to the correct products; totals reconcile without duplicate allocations for every policy; recalculation does not duplicate costs.
 - A fallback line/product allocation or a product with no usable good-unit cost is marked incomplete and blocks finalization rather than silently finalizing.
 - Waste policies produce the expected split; zero-good-unit and zero-base periods do not crash; finalized periods reject recalculation and require a reason to reopen.
+- Measured waste validation covers order/material/issue consistency, immutability, event-time LPC/fallback/unavailable values, reviewed zero versus missing, reversal, and finalized-period locks; result correction preserves the original and excludes it from active reports.
+- Concurrent counter starts on different orders sharing one line permit at most one overlapping interval on PostgreSQL.
 - The cross-month comparison shows consistent per-product values and month-over-month changes for the selected product and periods.
 - Existing catalog, inventory, and manufacturing workflows remain unaffected.
 
 ### Status
 
-Implemented and verified on both the isolated SQLite test database and the approved PostgreSQL test database `test_paper_factory` (85 tests, zero skips). `paper_factory` must never be used for development or tests.
+Implemented and verified on the isolated SQLite test database and the approved PostgreSQL test database `test_paper_factory` as role `paper_factory_app` at `127.0.0.1:5432`. The full backend suite `manage.py test --keepdb` passes (394 tests, zero failures/errors/skips, exit code 0 as of 2026-10-27). `paper_factory` was never connected to or modified.
+
+PostgreSQL verification is complete on the current environment: the installed `psycopg[binary]==3.3.6` runtime provides a working libpq, the live target is verified as `test_paper_factory` before every database-dependent command, and the full suite above passes with `--keepdb`.
+
+## Prompt 11 — Manual counters, yield standards, scrap reporting, and profit integration (implemented)
+
+Machine-counter readings are manual operational measurements only. They do not post inventory or replace production results. Counter shortfalls and unexplained issued-material differences are not physical scrap. Yield threshold classification is operational and separate from financial treatment. Material waste requires an explicit measured event linked to result/order/material; output scrap alone does not allocate material cost. Usable leftovers, WIP, and unexplained differences are not valued or deducted as waste.
+
+## Prompt 12 — Last Purchase Cost valuation (implemented; measured waste workflow added)
+
+PostgreSQL verification now covers the full backend suite with `--keepdb` on `test_paper_factory` (394 tests, zero failures as of 2026-10-27); see `IMPLEMENTATION_STATUS.md` for the verified test counts.
+
+- LPC is independent per material and comes only from a genuine, successfully posted and costed purchase receipt. The successful system posting timestamp (`StockMovement.posted_at`) governs price availability. Receipt dates and caller-controlled source labels cannot establish LPC provenance or historical availability.
+- Purchase receipts require positive quantities and positive price per base unit. Receipt lines, base quantity, product, source reference, document, and stock movement are checked together. Failed transactions have no LPC effect. Transfers, adjustments, and non-purchasing receipts never update LPC.
+- Material issues snapshot the applicable LPC and source at issue posting time. A dated `RawMaterialPrice` is a clearly labeled fallback. Missing both means unavailable valuation and incomplete costing. Reversals append an event at reversal posting time, preserving historical lookup before reversal and never creating a zero price.
+- `ProductionResult` records `posted_at` for new events; historical rows have no recoverable posting time. Immutable material-waste events capture measured base quantities and event-time LPC/fallback snapshots. A separate explicit review record captures zero damage; unreviewed results or unvalued material waste keep periods incomplete. No proportional quantities are invented.
+- Cross-month issue and result attribution follows the existing period rules; no finalized period is silently moved or recalculated. Result-month costing without related issue cost is incomplete and must use the existing reopen/correction workflow.
 
 ## Later prompts — shared support modules
 
@@ -121,7 +140,7 @@ Status: customer records, draft/confirmed/completed sales orders, partial shipme
 
 Implement a versioned REST API foundation for the future Flutter customer and owner applications without creating a second inventory, sales, purchasing, or costing ledger. Use token authentication and explicit customer/owner permissions. Customer endpoints may read only the authenticated customer's own profile, explicitly customer-visible products, authorized prices, and own orders, and may submit draft order requests through the existing sales service. Owner endpoints may project current persisted sales, purchasing, inventory, production, customer/supplier, and costing data for the dashboard.
 
-Status: implemented and hardened under `/api/v1/` with Django REST Framework and drf-spectacular. Customer catalog visibility is controlled by `Product.available_to_customers`; low-stock alerts use the explicit `Product.low_stock_threshold`; customer accounts are active non-staff users linked to an active customer. Customer order requests create draft sales orders with zero prices pending staff review and never confirm, reserve, ship, or deduct inventory. Confirmation and shipment are blocked until every line has a positive reviewed price, with `PENDING_REVIEW`/`RECORDED`/`UNPRICED` pricing status exposed separately from order status. The owner dashboard marks commercial document values as non-accounting, separates total from cancelled/active/reversed document counts, states production order-created versus output-recorded date bases, reads persisted monthly costing allocations/reconciliation without recalculating product costs, and returns `null` plus missing dependencies for profit, receivables, payables, and cash because accounting/invoicing/payments are not implemented. Responses are computed from current persisted data with no caching; no WebSockets, push notifications, or live-update infrastructure is implemented. Customer order-request idempotency keys and the Flutter applications remain future work. Consolidated reporting is implemented in Prompt 7 below.
+Status: implemented and hardened under `/api/v1/` with Django REST Framework and drf-spectacular. Customer catalog visibility is controlled by `Product.available_to_customers`; low-stock alerts use the explicit `Product.low_stock_threshold`; customer accounts are active non-staff users linked to an active customer. Customer order requests create draft sales orders with zero prices pending staff review and never confirm, reserve, ship, or deduct inventory. Confirmation and shipment are blocked until every line has a positive reviewed price, with `PENDING_REVIEW`/`RECORDED`/`UNPRICED` pricing status exposed separately from order status. The owner dashboard marks commercial document values as non-accounting, separates total from cancelled/active/reversed document counts, states production order-created versus output-recorded date bases, reads persisted monthly costing allocations/reconciliation without recalculating product costs, and returns `null` plus missing dependencies for profit, receivables, payables, and cash because accounting/invoicing/payments are not implemented. Responses are computed from current persisted data with no caching; no WebSockets, push notifications, or live-update infrastructure is implemented. Customer order-request idempotency keys remain future work; the Flutter Android client is implemented in Prompt 13B. Consolidated reporting is implemented in Prompt 7 below.
 
 ### Prompt 7 — Consolidated and line-level reports
 
@@ -164,3 +183,32 @@ corrections, incomplete costing, multiple lines, reports, and API coverage on Po
 
 Cross-cutting authorization review, backup/restore automation, monitoring, and deployment
 hardening remain separate future deployment work.
+
+### Prompt 13A — Owner authorization and employee operational API
+
+Status: implemented in `api.permissions` and `api.employee_api`. Owner API access
+requires an active superuser or membership in the `ERP Owners` group. Employee
+API access requires active staff status and membership in `ERP Operational
+Staff`; each write also checks the existing manufacturing permission in its
+service. `is_staff` alone grants neither role. No user migration or automatic
+role assignment is used: existing owners must be explicitly assigned before
+rollout. Customers remain active non-staff users linked to an active customer.
+The employee API covers production order and operation reads, progress and
+result posting/reversal, measured waste and reviewed-zero evidence, material and
+location reads, material issues, counter lifecycle, and finished-goods receipts.
+Writes derive actor and posting times server-side and route through established
+domain services. Employee responses omit costing and profit values.
+
+### Prompt 13B — Flutter Android MVP
+
+Status: implemented in `mobile/`. The Android client authenticates against the
+real token endpoint, calls `/api/v1/auth/me/` for the server-derived role, and
+routes owner, operational-employee, and customer users to their existing
+endpoints. Tokens are stored only through `flutter_secure_storage`; tests use an
+in-memory store. API URLs default to the emulator host with `/api/v1` and are
+configurable. Cleartext HTTP is debug-only and release builds require HTTPS.
+Android backups are disabled. Forms use API-provided unit, product, order,
+requirement, counter, and location IDs. Owner and employee screens read persisted
+values and do not recompute costs, profit, waste, or stock. Verification covers
+`flutter pub get`, `flutter analyze`, `flutter test`, and an Android debug APK.
+- Verification in this phase targeted an Android debug APK and the Flutter test suite. iOS, Flutter web, and a signed release APK remain future work.

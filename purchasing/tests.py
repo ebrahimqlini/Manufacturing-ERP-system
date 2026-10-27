@@ -412,7 +412,7 @@ class PurchasingPriceTraceabilityTests(PurchasingFixtureMixin, TestCase):
         # ...but the owner-entered costing price and the valuation method are unchanged.
         self.assertEqual(get_material_price(self.material, date(2026, 10, 15)), Decimal("3.000000"))
         self.assertEqual(RawMaterialPrice.objects.count(), 1)
-        self.assertEqual(MATERIAL_VALUATION_METHOD, "OWNER_STANDARD_PRICE")
+        self.assertEqual(MATERIAL_VALUATION_METHOD, "LAST_PURCHASE_COST")
 
 
 class PurchasingPriceHistoryFilterTests(PurchasingFixtureMixin, TestCase):

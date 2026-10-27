@@ -622,6 +622,7 @@ class CostingReportTests(ConsolidatedReportFixture):
         self.assertEqual(row["actual_material_cost"], "100.00")
         self.assertEqual(row["material_cost_assigned_to_good"], "80.00")
         self.assertEqual(row["waste_material_cost"], "20.00")
+        self.assertEqual(row["waste_cost_basis"], "ORDER_LEVEL_ALLOCATION_ESTIMATE")
         self.assertEqual(row["overhead_allocation_total"], "20.00")
         self.assertEqual(row["total_production_cost"], "100.00")
         self.assertTrue(row["reconciliation"]["materials_reconcile"])

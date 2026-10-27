@@ -15,6 +15,7 @@ database; the production ``paper_factory`` database is never touched.
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from threading import Barrier
+from unittest import mock
 import uuid
 
 from django.contrib.auth import get_user_model
@@ -105,6 +106,7 @@ class CostingClosingConcurrencyTests(TransactionTestCase, _RaceHarness):
             ("release_order", "manufacturing"),
             ("issue_material", "manufacturing"),
             ("record_production_result", "manufacturing"),
+            ("record_production_waste", "manufacturing"),
             ("calculate_monthly_costing", "costing"),
             ("finalize_costing_period", "costing"),
             ("calculate_monthly_profit", "costing"),
@@ -176,11 +178,13 @@ class CostingClosingConcurrencyTests(TransactionTestCase, _RaceHarness):
             order=self.order, requirement=self.requirement, quantity=Decimal("10"),
             unit=self.kg, reference=f"SEED-{suffix}", actor=self.staff,
         )
-        record_production_result(
+        result, _ = record_production_result(
             order=self.order, actor=self.staff, good_quantity=Decimal("50"),
             scrap_quantity=Decimal("0"), unit=self.pcs, notes="",
             occurred_at=timezone.now(),
         )
+        from manufacturing.services import confirm_no_material_waste
+        confirm_no_material_waste(result=result, actor=self.staff)
 
         today = timezone.localdate()
         self.year, self.month = today.year, today.month
@@ -335,14 +339,17 @@ class CostingClosingConcurrencyTests(TransactionTestCase, _RaceHarness):
         )
         from datetime import timedelta
         open_date = timezone.now() + timedelta(days=45)
-        result, created = record_production_result(
-            order=ProductionOrder.objects.get(pk=self.order.pk), actor=self._fresh_actor(),
-            good_quantity=Decimal("5"), scrap_quantity=Decimal("0"), unit=self.pcs,
-            notes="", occurred_at=open_date,
-        )
+        # Simulate that the system clock has advanced into the open month.
+        # A user-entered occurred_at must not choose the costing month.
+        with mock.patch("django.utils.timezone.now", return_value=open_date):
+            result, created = record_production_result(
+                order=ProductionOrder.objects.get(pk=self.order.pk), actor=self._fresh_actor(),
+                good_quantity=Decimal("5"), scrap_quantity=Decimal("0"), unit=self.pcs,
+                notes="", occurred_at=open_date,
+            )
         self.assertTrue(created)
         self.assertEqual(
-            timezone.localdate(result.occurred_at).month, open_date.date().month
+            timezone.localdate(result.posted_at).month, open_date.date().month
         )
 
     @skipUnlessDBFeature("has_select_for_update")

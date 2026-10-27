@@ -4,6 +4,7 @@ from decimal import Decimal
 import uuid
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
@@ -48,6 +49,7 @@ class ProfitFixtureMixin:
             password="test-password",
             is_staff=True,
         )
+        self.owner.groups.add(Group.objects.get_or_create(name="ERP Owners")[0])
         perms = Permission.objects.filter(
             content_type__app_label__in=[
                 "manufacturing", "inventory", "costing", "purchasing", "sales"

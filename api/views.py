@@ -58,6 +58,7 @@ from .serializers import (
     OwnerStockMovementSerializer,
     OwnerStockRowSerializer,
     TokenResponseSerializer,
+    CurrentUserSerializer,
 )
 
 
@@ -472,3 +473,43 @@ class TokenLogoutView(APIView):
             return Response({"detail": "Token authentication is required."}, status=status.HTTP_400_BAD_REQUEST)
         request.auth.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CurrentUserView(APIView):
+    """Identify the authenticated user profile, active roles, and permissions."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: CurrentUserSerializer}, description="Get authenticated user identity and roles.")
+    def get(self, request):
+        user = request.user
+        is_owner = bool(user.is_superuser or user.groups.filter(name="ERP Owners").exists())
+        is_employee = bool(user.is_staff and user.groups.filter(name="ERP Operational Staff").exists())
+        customer = getattr(user, "customer_account", None)
+        is_customer = bool(not user.is_staff and customer and customer.active)
+
+        if is_owner:
+            role = "OWNER"
+        elif is_employee:
+            role = "EMPLOYEE"
+        elif is_customer:
+            role = "CUSTOMER"
+        else:
+            role = "NONE"
+
+        data = {
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "is_superuser": user.is_superuser,
+            "is_staff": user.is_staff,
+            "is_owner": is_owner,
+            "is_employee": is_employee,
+            "is_customer": is_customer,
+            "role": role,
+            "customer_id": customer.pk if (customer and customer.active) else None,
+            "customer_code": customer.code if (customer and customer.active) else None,
+            "customer_name_ar": customer.name_ar if (customer and customer.active) else None,
+            "permissions": sorted(user.get_all_permissions()),
+        }
+        return Response(data)

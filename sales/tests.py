@@ -472,7 +472,7 @@ class SalesPricingBoundaryTests(SalesFixtureMixin, TestCase):
         self.assertEqual(shipment_line.line_total, Decimal("200.00"))
         self.assertEqual(get_material_price(self.product, date(2026, 10, 15)), Decimal("3.000000"))
         self.assertEqual(RawMaterialPrice.objects.count(), 1)
-        self.assertEqual(MATERIAL_VALUATION_METHOD, "OWNER_STANDARD_PRICE")
+        self.assertEqual(MATERIAL_VALUATION_METHOD, "LAST_PURCHASE_COST")
 
 
 class ShipmentValuationTests(SalesFixtureMixin, TestCase):
@@ -504,7 +504,7 @@ class ShipmentValuationTests(SalesFixtureMixin, TestCase):
         self.assertEqual(shipment.net_value, Decimal("24.00"))
         self.assertEqual(order.shipped_value, Decimal("24.00"))
         self.assertEqual(RawMaterialPrice.objects.count(), 0)
-        self.assertEqual(MATERIAL_VALUATION_METHOD, "OWNER_STANDARD_PRICE")
+        self.assertEqual(MATERIAL_VALUATION_METHOD, "LAST_PURCHASE_COST")
 
     def test_piece_order_shipped_in_cartons_uses_base_price_for_value(self):
         order = self.make_order(

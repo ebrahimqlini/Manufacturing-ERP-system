@@ -96,7 +96,7 @@
 
 <div class="alert alert-secondary shadow-sm small">
   <strong>طريقة تقييم المواد:</strong> {{ period.get_material_valuation_method_display }}.
-  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل بيانات تكلفة.
+  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح؛ تُقوَّم المواد المستهلكة بأحدث سعر شراء مسجّل.
   {% if waste_total > 0 %}<br><strong>تكلفة المواد المنفصلة عن الهالك هذا الشهر:</strong> {{ waste_total|floatformat:2 }} ج.م — تُعرض منفصلة ولا تُضاف فوق إجمالي تكلفة المواد.{% endif %}
 </div>
 
@@ -162,7 +162,7 @@
           <td>{{ entry.scrap_units_produced|floatformat:0 }}</td>
           <td>{{ entry.actual_material_cost|floatformat:2 }} ج.م</td>
           <td class="text-success">{{ entry.material_cost_assigned_to_good|floatformat:2 }} ج.م</td>
-          <td class="text-warning">{{ entry.waste_material_cost|floatformat:2 }} ج.م</td>
+          <td class="text-warning">{{ entry.waste_material_cost|floatformat:2 }} ج.م<br><small>تكلفة أحداث الهالك المادي المقاس</small></td>
           <td>{{ entry.allocated_labor_cost|floatformat:2 }} ج.م</td>
           <td>{{ entry.allocated_electricity_cost|floatformat:2 }} ج.م</td>
           <td>{{ entry.allocated_water_cost|floatformat:2 }} ج.م</td>

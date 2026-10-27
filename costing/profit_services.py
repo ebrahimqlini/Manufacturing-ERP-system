@@ -15,10 +15,13 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from sales.models import SalesOrder, ShipmentLine
+from manufacturing.models import ProductionResult, ProductionMaterialWaste
+
+from .yield_services import absorbed_scrap_estimate, separated_scrap_components
 
 from .models import (
     CostingPeriod,
@@ -165,6 +168,12 @@ def calculate_monthly_profit(*, year, month, actor=None):
     computed only for quantities actually shipped, using the persisted direct
     material cost per good unit from the latest available costing entry. Products
     manufactured but not sold remain inventory and are not expensed.
+
+    Separated scrap (SEPARATE_ABNORMAL policy) is deducted exactly once as a
+    loss line — only for completed orders with complete entries — because that
+    material was excluded from unit cost and COGS. Scrap absorbed under the
+    normal policy is never deducted again. The formula is:
+    ``monthly_result = gross_profit − operating_total − separated_scrap_loss``.
     """
     require_permission(actor, "costing.calculate_monthly_profit", "احتساب الأرباح الشهرية")
     require_staff(actor)
@@ -321,7 +330,77 @@ def calculate_monthly_profit(*, year, month, actor=None):
         other = expense_totals[MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL]
         operating_total = _money(labor + electricity + maintenance + other)
         gross_profit = _money(revenue_total - cogs_total)
-        monthly_result = _money(gross_profit - operating_total)
+
+        # --- Separated scrap: deducted once, only when truly outside cost ---
+        # Under SEPARATE_ABNORMAL the recorded scrap material was excluded from
+        # material_cost_per_good_unit (and therefore from COGS), so its
+        # persisted waste_material_cost is deducted here as a loss line — but
+        # only for COMPLETED orders with COMPLETE entries; the rest is
+        # reported as unreconciled and never deducted or fabricated. Under
+        # ABSORBED_NORMAL nothing is deducted: the scrap already rides inside
+        # unit cost → COGS, and deducting again would double-count it.
+        separated_scrap, unreconciled_scrap, scrap_notes = separated_scrap_components(
+            period=costing_period
+        )
+        absorbed_scrap = absorbed_scrap_estimate(period=costing_period)
+        notes.extend(scrap_notes)
+        active_waste_evidence = ProductionMaterialWaste.objects.filter(
+            result_id=OuterRef("pk"), reversal_of__isnull=True, reversal__isnull=True
+        )
+        unresolved_waste_reviews = ProductionResult.objects.filter(
+            posted_at__date__gte=start, posted_at__date__lte=end,
+            correction__isnull=True,
+            waste_review__isnull=True,
+        ).annotate(has_active_waste_evidence=Exists(active_waste_evidence)).filter(
+            has_active_waste_evidence=False
+        ).count()
+        unvalued_material_waste = ProductionMaterialWaste.objects.filter(
+            posted_at__date__gte=start, posted_at__date__lte=end,
+            total_cost_snapshot__isnull=True,
+        ).count()
+        legacy_unknown_results = ProductionResult.objects.filter(
+            posted_at__isnull=True, occurred_at__date__gte=start, occurred_at__date__lte=end,
+        ).count()
+        if unresolved_waste_reviews:
+            notes.append(
+                f"توجد {unresolved_waste_reviews} نتيجة إنتاج لم تكتمل مراجعة المواد التالفة فيها؛ "
+                "سجّل القياس المادي أو أكد صراحة عدم وجوده."
+            )
+        if unvalued_material_waste:
+            notes.append(
+                f"يوجد {unvalued_material_waste} سجل هالك مواد بلا تقييم موثوق وقت الترحيل."
+            )
+        if legacy_unknown_results:
+            notes.append(
+                f"توجد {legacy_unknown_results} نتيجة إنتاج قديمة بلا وقت ترحيل موثوق؛ "
+                "لا يمكن نسبتها ماليًا إلى هذا الشهر من تاريخ الإدخال."
+            )
+        if costing_period is None:
+            scrap_treatment = MonthlyProfitPeriod.ScrapTreatment.NO_COSTING
+            notes.append(
+                "لا توجد فترة تكاليف مرتبطة بهذا الشهر؛ لم تُحتسب أي تكلفة هالك معتمدة."
+            )
+        elif separated_scrap > 0:
+            scrap_treatment = MonthlyProfitPeriod.ScrapTreatment.SEPARATED
+            notes.append(
+                f"خسارة هالك مفصلة مخصومة مرة واحدة: {separated_scrap} ج.م "
+                "(كانت مستبعدة أصلًا من تكلفة الوحدات الجيدة وCOGS بسياسة فصل الهالك)."
+            )
+        elif unreconciled_scrap > 0:
+            scrap_treatment = MonthlyProfitPeriod.ScrapTreatment.SEPARATED
+            notes.append(
+                f"هالك مفصل بقيمة {unreconciled_scrap} ج.م غير مخصوم بعد (أوامر غير مكتملة "
+                "أو احتساب غير مكتمل)؛ يظهر في «هالك غير محوَّل» ولا يُخصم من النتيجة."
+            )
+        elif absorbed_scrap > 0:
+            scrap_treatment = MonthlyProfitPeriod.ScrapTreatment.ABSORBED
+            notes.append(
+                f"تكلفة الهالك المقدّرة {absorbed_scrap} ج.م محمّلة ضمن تكلفة الوحدات "
+                "الجيدة ومنها تكلفة البضاعة المباعة؛ تُعرض ولا تُخصم مرة أخرى."
+            )
+        else:
+            scrap_treatment = MonthlyProfitPeriod.ScrapTreatment.NONE
+        monthly_result = _money(gross_profit - operating_total - separated_scrap)
 
         previous = _previous_finalized(year, month)
         opening_loss = _money(
@@ -348,6 +427,10 @@ def calculate_monthly_profit(*, year, month, actor=None):
         period.maintenance_expense = maintenance
         period.other_expense = other
         period.operating_expenses_total = operating_total
+        period.separated_scrap_loss = separated_scrap
+        period.absorbed_scrap_cost = absorbed_scrap
+        period.unreconciled_scrap_cost = unreconciled_scrap
+        period.scrap_treatment = scrap_treatment
         period.monthly_result = monthly_result
         period.opening_accumulated_loss = opening_loss
         period.loss_recovered = loss_recovered
@@ -358,7 +441,13 @@ def calculate_monthly_profit(*, year, month, actor=None):
         period.maintenance_recorded = recorded[MonthlyExpense.ExpenseType.MAINTENANCE]
         period.other_recorded = recorded[MonthlyExpense.ExpenseType.OTHER_INDUSTRIAL]
         period.cogs_complete = cogs_complete
-        period.is_complete = bool(cogs_complete and expenses_complete)
+        # Do not finalize a month while separated scrap remains unreconciled.
+        # Absorbed scrap remains inside COGS and is never deducted a second time.
+        scrap_complete = (
+            unreconciled_scrap == 0 and not unresolved_waste_reviews
+            and not unvalued_material_waste and not legacy_unknown_results
+        )
+        period.is_complete = bool(cogs_complete and expenses_complete and scrap_complete)
         period.missing_data_notes = "\n".join(sorted(set(note for note in notes if note)))
         period.active_shipment_count = shipment_count
         period.active_shipment_line_count = line_count
@@ -417,7 +506,8 @@ def finalize_monthly_profit(*, period, actor):
         if not period.is_complete:
             raise ValidationError(
                 "لا يمكن اعتماد نتيجة الشهر لوجود بيانات ناقصة. راجع ملاحظات "
-                "البيانات الناقصة وسجلات المصاريف وتكاليف البضاعة المباعة."
+                "البيانات الناقصة وسجلات المصاريف وتكاليف البضاعة المباعة والهالك "
+                "غير المحوَّل. " + period.missing_data_notes
             )
         period.status = MonthlyProfitPeriod.Status.FINALIZED
         period.finalized_at = timezone.now()

@@ -17,6 +17,7 @@
   <strong>حدود التقرير:</strong> يقرأ النتائج المحفوظة فقط ولا يعيد احتساب تكلفة منتج أو مصروف.
   تكلفة البضاعة المباعة هي مواد مباشرة للكميات المشحونة فقط؛ العمالة والكهرباء والصيانة والمصاريف الأخرى
   تُخصم مرة واحدة كتعبئة شهرية. المياه مستبعدة من الحساب المتفق عليه. المصاريف الغائبة ليست صفرًا مؤكدًا.
+  خسارة الهالك المفصلة تُخصم مرة واحدة فقط؛ الهالك المحمّل ضمن تكلفة الوحدة يدخل COGS ولا يُخصم مرة أخرى.
 </div>
 
 <div class="row g-3 mb-4">
@@ -24,6 +25,7 @@
   <div class="col-md-3"><div class="card card-body"><span class="text-muted small">تكلفة البضاعة المباعة</span><strong class="fs-5 ltr">{{ profit.range_totals.cogs }}</strong></div></div>
   <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي الربح</span><strong class="fs-5 ltr">{{ profit.range_totals.gross_profit }}</strong></div></div>
   <div class="col-md-3"><div class="card card-body"><span class="text-muted small">إجمالي المصاريف التشغيلية</span><strong class="fs-5 ltr">{{ profit.range_totals.operating_expenses_total }}</strong></div></div>
+  <div class="col-md-4"><div class="card card-body"><span class="text-muted small">خسارة هالك مفصلة مخصومة</span><strong class="fs-5 ltr">{{ profit.range_totals.separated_scrap_loss }}</strong></div></div>
   <div class="col-md-4"><div class="card card-body"><span class="text-muted small">مجموع نتائج الشهور قبل التغطية</span><strong class="fs-5 ltr">{{ profit.range_totals.monthly_result }}</strong></div></div>
   <div class="col-md-4"><div class="card card-body"><span class="text-muted small">إجمالي المسترد من خسائر سابقة</span><strong class="fs-5 ltr">{{ profit.range_totals.loss_recovered }}</strong></div></div>
   <div class="col-md-4"><div class="card card-body"><span class="text-muted small">أحدث رصيد خسائر ختامي</span><strong class="fs-5 ltr">{{ profit.range_totals.latest_closing_accumulated_loss|default:"—" }}</strong></div></div>
@@ -34,7 +36,7 @@
   <div class="table-responsive"><table class="table table-sm table-hover mb-0">
     <thead><tr>
       <th>الفترة</th><th>الحالة</th><th>البيانات</th><th>صافي المبيعات</th><th>تكلفة البضاعة المباعة</th><th>إجمالي الربح</th>
-      <th>عمالة</th><th>كهرباء</th><th>صيانة</th><th>أخرى</th><th>إجمالي المصاريف</th>
+      <th>عمالة</th><th>كهرباء</th><th>صيانة</th><th>أخرى</th><th>إجمالي المصاريف</th><th>هالك مخصوم</th>
       <th>نتيجة الشهر</th><th>خسائر افتتاحية</th><th>مسترد</th><th>خسائر ختامية</th><th>ربح متبقٍ بعد التغطية</th><th>تفاصيل</th>
     </tr></thead>
     <tbody>
@@ -45,18 +47,19 @@
         <td>{% if row.is_complete %}<span class="badge bg-success">مكتملة</span>{% else %}<span class="badge bg-danger">ناقصة</span>{% endif %}</td>
         <td class="ltr">{{ row.revenue }}</td><td class="ltr">{{ row.cogs }}</td><td class="ltr">{{ row.gross_profit }}</td>
         <td class="ltr">{{ row.labor_expense }}</td><td class="ltr">{{ row.electricity_expense }}</td><td class="ltr">{{ row.maintenance_expense }}</td><td class="ltr">{{ row.other_expense }}</td><td class="ltr">{{ row.operating_expenses_total }}</td>
+        <td class="ltr">{% if row.has_scrap_deduction %}<span class="badge bg-danger">{{ row.separated_scrap_loss }}</span>{% else %}—{% endif %}</td>
         <td class="ltr fw-bold {% if row.is_loss_month %}text-danger{% else %}text-success{% endif %}">{{ row.monthly_result }}</td>
         <td class="ltr">{{ row.opening_accumulated_loss }}</td><td class="ltr">{{ row.loss_recovered }}</td><td class="ltr">{{ row.closing_accumulated_loss }}</td>
         <td class="ltr fw-bold">{{ row.profit_after_loss_recovery }}</td>
         <td><a class="btn btn-sm btn-outline-primary" href="{% url 'costing:profit_period_detail' row.id %}">فتح</a></td>
       </tr>
       {% if row.missing_data_notes_list %}
-      <tr><td colspan="17" class="small text-danger">
+      <tr><td colspan="18" class="small text-danger">
         {% for note in row.missing_data_notes_list %}<div>• {{ note }}</div>{% endfor %}
       </td></tr>
       {% endif %}
       {% empty %}
-      <tr><td colspan="17" class="text-center text-muted py-4">لا توجد فترات أرباح محفوظة في الفترة المحددة.</td></tr>
+      <tr><td colspan="18" class="text-center text-muted py-4">لا توجد فترات أرباح محفوظة في الفترة المحددة.</td></tr>
       {% endfor %}
     </tbody>
   </table></div>

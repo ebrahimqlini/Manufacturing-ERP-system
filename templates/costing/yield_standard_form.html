@@ -40,6 +40,40 @@
               {{ form.carton_unit }}
               {% if form.carton_unit.errors %}<div class="text-danger small">{{ form.carton_unit.errors }}</div>{% endif %}
             </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.supplier_name.label }}</label>
+              {{ form.supplier_name }}
+              {% if form.supplier_name.errors %}<div class="text-danger small">{{ form.supplier_name.errors }}</div>{% endif %}
+              {% if form.supplier_name.help_text %}<div class="form-text">{{ form.supplier_name.help_text }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.specification_reference.label }}</label>
+              {{ form.specification_reference }}
+              {% if form.specification_reference.errors %}<div class="text-danger small">{{ form.specification_reference.errors }}</div>{% endif %}
+              {% if form.specification_reference.help_text %}<div class="form-text">{{ form.specification_reference.help_text }}</div>{% endif %}
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">{{ form.revision.label }}</label>
+              {{ form.revision }}
+              {% if form.revision.errors %}<div class="text-danger small">{{ form.revision.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">{{ form.effective_date.label }}</label>
+              {{ form.effective_date }}
+              {% if form.effective_date.errors %}<div class="text-danger small">{{ form.effective_date.errors }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.target_yield_percent.label }}</label>
+              {{ form.target_yield_percent }}
+              {% if form.target_yield_percent.errors %}<div class="text-danger small">{{ form.target_yield_percent.errors }}</div>{% endif %}
+              {% if form.target_yield_percent.help_text %}<div class="form-text">{{ form.target_yield_percent.help_text }}</div>{% endif %}
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">{{ form.max_scrap_percent.label }}</label>
+              {{ form.max_scrap_percent }}
+              {% if form.max_scrap_percent.errors %}<div class="text-danger small">{{ form.max_scrap_percent.errors }}</div>{% endif %}
+              {% if form.max_scrap_percent.help_text %}<div class="form-text">{{ form.max_scrap_percent.help_text }}</div>{% endif %}
+            </div>
             <div class="col-12">
               <label class="form-label">{{ form.notes.label }}</label>
               {{ form.notes }}

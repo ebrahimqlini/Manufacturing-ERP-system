@@ -43,6 +43,7 @@ from .services import (
     finalize_costing_period,
     reopen_costing_period,
 )
+from .yield_services import monthly_scrap_summary, yield_report
 
 
 def staff_required(view):
@@ -862,7 +863,11 @@ def yield_standard_edit(request, pk):
     form = RollYieldStandardForm(request.POST or None, instance=standard)
     if request.method == "POST" and form.is_valid():
         try:
-            form.save()
+            standard = form.save(commit=False)
+            # Audit trail: every spec edit records who changed it; historical
+            # costing entries keep their own threshold snapshots.
+            standard.updated_by = request.user
+            standard.save()
             messages.success(request, "تم تحديث معيار إنتاجية الرول.")
             return redirect("costing:yield_standard_list")
         except ValidationError as exc:
@@ -873,6 +878,41 @@ def yield_standard_edit(request, pk):
         request,
         "costing/yield_standard_form.html",
         {"form": form, "title": f"تعديل معيار إنتاجية {standard.product.sku}"},
+    )
+
+
+@costing_financials_required
+def yield_report_view(request):
+    """Read-only period report: recorded scrap vs. approved thresholds.
+
+    Classification uses the threshold snapshot persisted at calculation time,
+    and the only monetary figure shown is the persisted authoritative
+    ``waste_material_cost``; nothing here recalculates costing or profit.
+    """
+    latest = CostingPeriod.objects.order_by("-year", "-month").first()
+    today = date.today()
+    try:
+        year = int(request.GET.get("year")) if request.GET.get("year") else (
+            latest.year if latest else today.year
+        )
+        month = int(request.GET.get("month")) if request.GET.get("month") else (
+            latest.month if latest else today.month
+        )
+    except (TypeError, ValueError):
+        year, month = (latest.year, latest.month) if latest else (today.year, today.month)
+    report = yield_report(year=year, month=month)
+    summary = monthly_scrap_summary(year=year, month=month)
+    return render(
+        request,
+        "costing/yield_report.html",
+        {
+            "report": report,
+            "summary": summary,
+            "year": year,
+            "month": month,
+            "months": range(1, 13),
+            "periods": CostingPeriod.objects.order_by("-year", "-month"),
+        },
     )
 
 

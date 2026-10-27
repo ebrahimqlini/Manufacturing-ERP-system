@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}تقرير العائد والهالك — {{ year }}/{{ month|stringformat:"02d" }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-0">تقرير العائد والهالك الشهري</h1>
+    <span class="text-muted small">مقارنة الهالك المسجل بالنسب المعتمدة — التصنيف تشغيلي، والمعالجة المالية تتبع سياسة الفترة</span>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{% url 'costing:yield_standard_list' %}">معايير الإنتاجية</a>
+    <a class="btn btn-outline-secondary" href="{% url 'costing:period_list' %}">قائمة التكاليف</a>
+  </div>
+</div>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-auto">
+    <label class="form-label">الشهر</label>
+    <select name="month" class="form-select">
+      {% for m in months %}<option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label">السنة</label>
+    <input type="number" name="year" class="form-control" value="{{ year }}" min="2020" max="2100">
+  </div>
+  <div class="col-auto">
+    <button class="btn btn-primary">عرض</button>
+  </div>
+</form>
+
+{% if not report.period %}
+<div class="alert alert-warning">لا توجد فترة تكاليف لهذه الشهر؛ لم يُحتسب أي هالك مالي بعد.</div>
+{% else %}
+
+<div class="card card-body mb-3">
+  <div class="row">
+    <div class="col-md-3"><strong>الوحدات الجيدة:</strong> {{ summary.good_units|default:"—" }}</div>
+    <div class="col-md-3"><strong>الهالك المسجل:</strong> {{ summary.scrap_units|default:"—" }}</div>
+    <div class="col-md-3"><strong>نسبة الهالك:</strong> {% if summary.scrap_percent != None %}{{ summary.scrap_percent }}%{% else %}—{% endif %}</div>
+    <div class="col-md-3"><strong>سياسة الفترة:</strong> {{ summary.waste_policy_display }}</div>
+  </div>
+  <hr class="my-2">
+  <div class="row">
+    <div class="col-md-4"><strong>تكلفة الهالك المادي المقاس:</strong> {{ summary.allocated_scrap_cost_estimate }} ج.م<br><small class="text-muted">مجموع أحداث الهالك المسجلة بقيمتها وقت الترحيل؛ لا يُستخدم هالك المنتج لتقدير كمية المادة التالفة.</small></div>
+    <div class="col-md-4"><strong>مخصوم كخسارة هذا الشهر:</strong> {{ summary.separated_scrap_cost|default:"0.00" }} ج.م</div>
+    <div class="col-md-4"><strong>غير محوَّل (غير مخصوم):</strong> {{ summary.unreconciled_scrap_cost|default:"0.00" }} ج.م</div>
+  </div>
+  {% if summary.notes %}<ul class="mb-0 mt-2 small text-muted">{% for note in summary.notes %}<li>{{ note }}</li>{% endfor %}</ul>{% endif %}
+</div>
+
+<div class="card card-body mb-3">
+  <h2 class="h5">قياسات المواد التالفة المسجلة</h2>
+  <div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>أمر الإنتاج</th><th>المادة</th><th>النتيجة</th><th>الكمية التالفة</th><th>سعر الوحدة وقت الترحيل</th><th>التكلفة</th><th>المصدر</th><th>وقت الترحيل</th><th>مرجع الرول / العكس</th></tr></thead><tbody>
+  {% for waste in summary.waste_events %}<tr><td>{{ waste.order_number }}</td><td>{{ waste.material_name }} <bdi dir="ltr">{{ waste.material_sku }}</bdi></td><td>{{ waste.result_id }}</td><td>{{ waste.quantity_base }} {{ waste.unit_code }}</td><td>{{ waste.unit_cost_snapshot|default:"غير متاح" }}</td><td>{{ waste.total_cost_snapshot|default:"غير متاح" }}</td><td>{{ waste.cost_source }}</td><td>{{ waste.posted_at|date:"Y-m-d H:i" }}</td><td>{{ waste.roll_reference }}{% if waste.is_reversal %}<br>{{ waste.correction_reason }} (عكس){% endif %}</td></tr>{% empty %}<tr><td colspan="9" class="text-muted">لا توجد قياسات هالك مواد في هذه الفترة.</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>المنتج</th>
+          <th>خط الإنتاج</th>
+          <th>الوحدات الجيدة</th>
+          <th>الهالك المسجل</th>
+          <th>نسبة الهالك %</th>
+          <th>حد الهالك المعتمد %</th>
+          <th>التصنيف</th>
+          <th>عجز العائد %</th>
+          <th>تكلفة الهالك المادي (ج.م)</th>
+          <th>مرجع المواصفة</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in report.rows %}
+        <tr>
+          <td><strong>{{ row.product.name_ar }}</strong> (<bdi dir="ltr">{{ row.product.sku }}</bdi>)</td>
+          <td>{{ row.production_line.name_ar|default:"—" }}</td>
+          <td>{{ row.good_units }}</td>
+          <td>{{ row.scrap_units }}</td>
+          <td>{% if row.scrap_percent != None %}{{ row.scrap_percent }}%{% else %}—{% endif %}</td>
+          <td>{% if row.threshold_percent != None %}{{ row.threshold_percent }}%{% else %}<span class="text-muted">لا يوجد حد</span>{% endif %}</td>
+          <td>
+            {% if row.classification == 'ABOVE' %}<span class="badge bg-danger">{{ row.classification_label }}</span>
+            {% elif row.classification == 'WITHIN' %}<span class="badge bg-success">{{ row.classification_label }}</span>
+            {% else %}<span class="badge bg-secondary">{{ row.classification_label }}</span>{% endif %}
+          </td>
+          <td>{% if row.yield_shortfall_percent != None %}{{ row.yield_shortfall_percent }}%{% else %}—{% endif %}</td>
+          <td><strong>{{ row.separated_scrap_cost }}</strong><br><small class="text-muted">قياس مادي وقت الترحيل</small></td>
+          <td>
+            {% if row.standard_sku %}<bdi dir="ltr">{{ row.standard_sku }}</bdi> v{{ row.standard_revision }}{% if row.valuation %}<br><small class="text-muted">{{ row.valuation.note }}</small>{% endif %}{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="10" class="text-center py-4 text-muted">لا توجد إنتاجية محتسبة لهذا الشهر.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="alert alert-info mt-3 small">
+  <strong>تنويهات مهمة:</strong>
+  <ul class="mb-0">
+    <li>نسبة الهالك = الهالك المسجل ÷ (الجيد + الهالك المسجل) × 100 — قياس مادي مسجل فقط؛ لا تُحتسب أي نسبة هالك من عجز العائد.</li>
+    <li>التصنيف (ضمن/فوق الحد) تشغيلي فقط؛ المعالجة المالية تتبع سياسة الفترة: الهالك المحمّل ضمن تكلفة الوحدة لا يُخصم مرة أخرى من الربح.</li>
+    <li>الفروق بين المواد المصروفة والمتوقع للإنتاج المسجل تظهر كمادة غير محوَّلة وغير مفسَّرة (قد تشمل رولات متبقية قابلة للاستخدام أو مادة استُهلكت في وحدات الهالك المسجلة)؛ لا تُصنَّف هالكًا ولا تُقيَّم ولا تُخصم، ولم تُحدَّد قواعد بيعها أو إعادة تدويرها بعد.</li>
+    <li>هالك المنتج لا يثبت كمية المادة الخام التالفة. يلزم سجل قياس مادي مرتبط بنتيجة الإنتاج ومادة محددة مع قيمة الحدث؛ وتبقى الأدلة أو الأسعار الناقصة غير مكتملة.</li>
+  </ul>
+</div>
+{% endif %}
+{% endblock %}

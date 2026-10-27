@@ -1,7 +1,7 @@
 # Mobile API
 
 The versioned API foundation is implemented under `/api/v1/` with Django REST
-Framework. It is intended for the future Flutter customer and owner apps. Mobile
+Framework. It supports customer, owner, and operational mobile clients. Mobile
 clients must call this API; they must never connect directly to PostgreSQL.
 
 ## Authentication and roles
@@ -24,14 +24,24 @@ describes it with the dedicated `TokenResponse` component. Send it on later requ
 Authorization: Token <token>
 ```
 
-The token endpoint accepts JSON only and is rate-limited. Inactive users cannot authenticate. Staff users may obtain tokens for owner endpoints; customer endpoints require an active non-staff account linked to an active customer. `POST /api/v1/auth/logout/` revokes the current token.
+The token endpoint accepts JSON only and is rate-limited. Inactive users cannot authenticate. `POST /api/v1/auth/logout/` revokes the current token. After login, clients call `GET /api/v1/auth/me/` to obtain the server-derived effective role, customer identity, and permissions. The login response contains only the token; clients must not infer a role from local input.
 
-There are two explicit API roles:
+There are three explicit API roles:
 
 - **Customer:** an active, non-staff user linked one-to-one to an active
   `sales.Customer` record. Staff users cannot use customer endpoints.
-- **Owner:** an authenticated active staff user (`is_staff=True`). This reuses the
-  existing internal/staff boundary; it is not a separate accounting role.
+- **Owner:** an active superuser or active user assigned to Django group
+  `ERP Owners`. `is_staff=True` alone does not grant owner access.
+- **Operational staff:** an active staff user assigned to Django group
+  `ERP Operational Staff`. Each write also requires its existing manufacturing
+  model permission. Operational staff cannot access owner endpoints.
+
+Groups are not assigned automatically. Before rollout, explicitly assign every
+existing legitimate owner to `ERP Owners` or confirm it is a superuser, and
+assign operators to `ERP Operational Staff` with only their needed action
+permissions. This uses existing Django groups and requires no user-table
+migration. Customers and unauthenticated users are denied employee and owner
+routes.
 
 Customer links are configured by staff on the customer record. No customer
 registration or password-reset API is implemented.
@@ -287,6 +297,35 @@ Errors use a stable envelope:
 }
 ```
 
+## Employee operational endpoints
+
+All routes below require the `ERP Operational Staff` group and active staff
+status. Writes additionally require the domain permission checked by their
+service. Inputs reject undeclared fields; actor identity is the authenticated
+user and server services determine posting timestamps and valuation.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/v1/employee/production/orders/` | Active released/in-progress production orders and operation/material context. |
+| GET | `/api/v1/employee/production/orders/<id>/` | One active production order with operation and material requirements. |
+| POST | `/api/v1/employee/production/progress/` | Idempotent operation progress through `record_operation_progress`. |
+| POST | `/api/v1/employee/production/operations/complete/` | Complete an operation or skip an eligible optional step through `complete_operation`. |
+| POST | `/api/v1/employee/production/results/` | Production output through `record_production_result`. |
+| POST | `/api/v1/employee/production/results/<id>/reverse/` | Audited full result reversal. |
+| POST | `/api/v1/employee/production/results/<id>/waste/` | Immutable measured, material-specific waste. |
+| POST | `/api/v1/employee/production/results/<id>/waste-review/` | Explicit reviewed-zero evidence when no active waste exists. |
+| POST | `/api/v1/employee/production/waste/<id>/reverse/` | Audited waste reversal. |
+| GET | `/api/v1/employee/materials/` | Raw-material stock balances and active locations. |
+| POST | `/api/v1/employee/material-issues/` | Required material issue through `issue_material`. |
+| POST | `/api/v1/employee/counters/` | Start a manual counter interval. |
+| POST | `/api/v1/employee/counters/<id>/<action>/` (`close`) | Close a counter interval. |
+| POST | `/api/v1/employee/counters/<id>/<action>/` (`approve`) | Approve a completed/corrected interval. |
+| POST | `/api/v1/employee/counters/<id>/<action>/` (`correct`) | Correct an interval with an audit reason. |
+| POST | `/api/v1/employee/finished-receipts/` | Receive good production via the shared inventory ledger. |
+
+These adapters do not create ledger movements directly and omit cost/profit
+fields. Purchasing, sales, and financial writes are not available to employees.
+
 ## Schema documentation
 
 Staff-only schema and interactive documentation:
@@ -302,14 +341,17 @@ session authentication is enabled only for the schema and documentation views.
 
 ## Deliberate limitations
 
-- No Flutter applications, push notifications, WebSockets, or live streaming.
-  Mobile clients refresh when returning to a screen or after a write.
+- A Flutter Android client is implemented under `mobile/`. iOS, Flutter web,
+  push notifications, WebSockets, and live streaming are not implemented. A
+  signed release APK is also not built here. Mobile clients refresh when
+  returning to a screen or after a write.
 - No accounting, invoices, returns/credit notes, payments, tax, receivables,
   payables, cash, or authoritative accounting profit. The monthly management
   result and loss carry-forward are persisted separately and are not final net
   profit.
-- No inventory valuation, lot/serial tracking, stock reservation, or historical
-  as-of-date stock balance.
+- No accounting inventory valuation, FIFO, or moving weighted average. Per-material
+  Last Purchase Cost (LPC) snapshots are used only by production costing. There is
+  no lot/serial tracking, stock reservation, or historical as-of-date stock balance.
 - No production-line attribution on sales, purchasing, or shared inventory
   ledger entries. Production reports can be filtered by line; reports never
   allocate or duplicate shared records to manufacture a line breakdown.

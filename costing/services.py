@@ -4,11 +4,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
-from inventory.services import to_base_quantity
-from manufacturing.models import MaterialIssue, ProductionLine, ProductionResult
+from inventory.services import get_last_purchase_cost_as_of, to_base_quantity
+from manufacturing.models import MaterialIssue, ProductionLine, ProductionResult, ProductionMaterialWaste
 
 from .models import (
     CostingPeriod,
@@ -29,12 +29,13 @@ from core.permissions import require_permission, require_staff
 CENT = Decimal("0.01")
 FOUR_DECIMALS = Decimal("0.0001")
 
-# Material valuation method used by this module. The shared inventory ledger
-# records quantities only, so FIFO and weighted average cannot be computed
-# until purchasing cost is posted. Owner-entered prices are therefore applied
-# as a labelled provisional standard, and figures stay provisional until the
-# factory accountant approves a method (see DECISIONS.md).
-MATERIAL_VALUATION_METHOD = "OWNER_STANDARD_PRICE"
+# Material valuation method used by this module. Posted purchase receipts now
+# carry an immutable base-unit cost into the shared ledger, so actual material
+# issues are valued with the latest posted purchase cost (Last Purchase Cost).
+# Owner-entered prices remain only as a fallback for materials without any
+# posted purchase cost yet, and figures stay provisional until the factory
+# accountant approves a valuation method (see DECISIONS.md).
+MATERIAL_VALUATION_METHOD = "LAST_PURCHASE_COST"
 
 
 def get_price_record(material, as_of_date=None):
@@ -123,30 +124,6 @@ def _staff(actor):
     require_staff(actor)
 
 
-def _split_waste_material(material_cost, good_units, scrap_units, waste_policy):
-    """Split material cost between good output and recorded scrap.
-
-    ``SEPARATE_ABNORMAL`` allocates the material cost of recorded scrap in
-    proportion to the recorded good/scrap quantities of the same order and
-    reports it separately. The two parts always sum back to ``material_cost``,
-    so material cost is never counted twice. No physical waste quantity is
-    invented: only explicitly recorded scrap quantities are used.
-    """
-    total_output = good_units + scrap_units
-    if (
-        waste_policy == CostingPeriod.WastePolicy.SEPARATE_ABNORMAL
-        and total_output > 0
-        and scrap_units > 0
-        and material_cost > 0
-    ):
-        waste_material = _cents(material_cost * scrap_units / total_output)
-        if waste_material > material_cost:
-            waste_material = material_cost
-    else:
-        waste_material = Decimal("0.00")
-    return material_cost - waste_material, waste_material
-
-
 def _select_yield_standard(product, production_line, notes):
     """Pick the expected-yield standard for the product and its production line.
 
@@ -188,6 +165,9 @@ def _yield_analysis(product, production_line, rolls_raw_base, good_units_base, n
         "actual_good_cartons": good_units_base,
         "yield_variance_cartons": Decimal("0"),
         "yield_shortfall_percent": None,
+        # Exposed so callers can snapshot the exact standard used at calculation
+        # time (revision + approved thresholds) on the costing entry.
+        "standard": standard,
     }
     if not standard:
         return analysis
@@ -360,10 +340,22 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             .order_by("order__order_number", "created_at", "pk")
         )
         period_results = (
-            ProductionResult.objects.filter(occurred_at__date__gte=start_date, occurred_at__date__lte=end_date)
+            ProductionResult.objects.filter(posted_at__date__gte=start_date, posted_at__date__lte=end_date, correction__isnull=True)
             .select_related("order", "order__product", "order__production_line")
-            .order_by("order__order_number", "occurred_at", "pk")
+            .prefetch_related("material_waste")
+            .order_by("order__order_number", "posted_at", "pk")
         )
+
+        legacy_unknown_results = ProductionResult.objects.filter(
+            posted_at__isnull=True, occurred_at__date__gte=start_date,
+            occurred_at__date__lte=end_date,
+        ).count()
+        if legacy_unknown_results:
+            is_complete = False
+            missing_notes.append(
+                f"يوجد {legacy_unknown_results} نتيجة إنتاج قديمة بلا وقت ترحيل موثوق؛ "
+                "تعذر نسبتها إلى فترة تكلفة مالية."
+            )
 
         order_data = {}
 
@@ -376,6 +368,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     "production_line_id": order.production_line_id,
                     "good_units": Decimal("0"),
                     "scrap_units": Decimal("0"),
+                    "has_unvalued_scrap": False,
                     "material_cost": Decimal("0.00"),
                     "materials": {},
                     "has_missing_price": False,
@@ -386,20 +379,29 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             slot = order_slot(issue.order)
             material = issue.requirement.material
             quantity_base = issue.quantity_base
-            price_record, price_note = get_price_record_info(material, end_date)
-            if price_note and price_note not in missing_notes:
-                missing_notes.append(price_note)
-            if price_record is None:
+
+            # Use the cost snapshot from the material issue (last purchase cost or fallback)
+            unit_cost = issue.unit_cost_snapshot
+            cost_source = issue.cost_source
+            if unit_cost is not None:
+                line_cost = _cents(quantity_base * unit_cost)
+                unit_price_str = str(unit_cost)
+                if cost_source == MaterialIssue.CostSource.LAST_PURCHASE_COST:
+                    price_basis = "آخر سعر شراء"
+                elif cost_source == MaterialIssue.CostSource.STANDARD_PRICE_FALLBACK:
+                    price_basis = "سعر قياسي احتياطي"
+                else:
+                    price_basis = "غير محدد"
+            else:
+                # No cost snapshot available — mark as missing
                 slot["has_missing_price"] = True
                 is_complete = False
-                message = f"سعر المادة الخام غير محدد: {material.sku} ({material.name_ar})"
+                message = f"تكلفة المادة غير متاحة وقت الصرف: {material.sku} ({material.name_ar})"
                 if message not in missing_notes:
                     missing_notes.append(message)
                 line_cost = Decimal("0.00")
                 unit_price_str = "غير مسعر"
-            else:
-                line_cost = _cents(quantity_base * price_record.price_per_base_unit)
-                unit_price_str = str(price_record.price_per_base_unit)
+                price_basis = "غير متاح"
             slot["material_cost"] += line_cost
             material_line = slot["materials"].setdefault(
                 material.pk,
@@ -417,11 +419,67 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             material_line["quantity_base"] += quantity_base
             material_line["cost"] += line_cost
             material_line["orders"].append(issue.order.order_number)
+            # Record price basis for audit trail
+            material_line.setdefault("price_basis", []).append(price_basis)
 
         for result in period_results:
             slot = order_slot(result.order)
             slot["good_units"] += result.good_quantity_base
             slot["scrap_units"] += result.scrap_quantity_base
+            has_active_waste_evidence = ProductionMaterialWaste.objects.filter(
+                result=result, reversal_of__isnull=True, reversal__isnull=True
+            ).exists()
+            if not hasattr(result, "waste_review") and not has_active_waste_evidence:
+                is_complete = False
+                missing_notes.append(
+                    f"نتيجة الإنتاج #{result.pk} في أمر {result.order.order_number}: "
+                    "لم تُسجل قياسات الهالك المادي ولم يُعتمد صراحة عدم وجوده."
+                )
+
+        # Waste belongs to the month in which that waste evidence was posted,
+        # even when it references an older result. Reversals retain the same
+        # event-time value and contribute the opposite amount.
+        period_waste = ProductionMaterialWaste.objects.filter(
+            Q(posted_at__date__gte=start_date, posted_at__date__lte=end_date)
+            | Q(reversal_of__posted_at__date__gte=start_date, reversal_of__posted_at__date__lte=end_date)
+        ).select_related("order", "result", "material")
+        for waste in period_waste:
+            slot = order_slot(waste.order)
+            sign = Decimal("-1") if waste.reversal_of_id else Decimal("1")
+            slot.setdefault("scrap_breakdown", []).append({
+                "result_id": waste.result_id,
+                "material_id": waste.material_id,
+                "material_sku": waste.material.sku,
+                "material_name": waste.material.name_ar,
+                "quantity_base": str(sign * waste.quantity_base),
+                "unit_cost_snapshot": str(waste.unit_cost_snapshot) if waste.unit_cost_snapshot is not None else None,
+                "total_cost_snapshot": str(sign * waste.total_cost_snapshot) if waste.total_cost_snapshot is not None else None,
+                "cost_source": waste.cost_source,
+                "posted_at": waste.posted_at.isoformat(),
+                "material_issue_id": str(waste.material_issue_id) if waste.material_issue_id else None,
+                "roll_reference": waste.roll_reference,
+                "is_reversal": bool(waste.reversal_of_id),
+                "correction_reason": waste.correction_reason,
+            })
+            if waste.total_cost_snapshot is None:
+                is_complete = False
+                missing_notes.append(
+                    f"هالك المادة {waste.material.sku} في النتيجة #{waste.result_id} غير مسعر وقت الترحيل."
+                )
+                slot["has_unvalued_scrap"] = True
+            else:
+                slot["measured_waste_cost"] = slot.get("measured_waste_cost", Decimal("0.00")) + sign * waste.total_cost_snapshot
+
+        for slot in order_data.values():
+            if slot["scrap_units"] > 0 and any(
+                result.order_id == slot["order"].pk
+                and not hasattr(result, "waste_review")
+                and not ProductionMaterialWaste.objects.filter(
+                    result=result, reversal_of__isnull=True, reversal__isnull=True
+                ).exists()
+                for result in period_results
+            ):
+                slot["has_unvalued_scrap"] = True
 
         if not order_data:
             _release_draft_cogs_source_links(period)
@@ -441,8 +499,18 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
 
         # --- Material split between good output and recorded scrap ---
         for slot in order_data.values():
-            slot["good_material_cost"], slot["waste_material_cost"] = _split_waste_material(
-                slot["material_cost"], slot["good_units"], slot["scrap_units"], period.waste_policy
+            measured_waste = _cents(slot.get("measured_waste_cost", Decimal("0.00")))
+            if measured_waste < 0:
+                is_complete = False
+                missing_notes.append(
+                    f"أمر {slot['order'].order_number}: عكوس هالك المواد تتجاوز القيود المسجلة؛ راجع العكس."
+                )
+                measured_waste = Decimal("0.00")
+            slot["waste_material_cost"] = measured_waste
+            slot["good_material_cost"] = (
+                _cents(max(Decimal("0.00"), slot["material_cost"] - measured_waste))
+                if period.waste_policy == CostingPeriod.WastePolicy.SEPARATE_ABNORMAL
+                else _cents(slot["material_cost"])
             )
 
         # --- Group orders by product ---
@@ -454,6 +522,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                 {
                     "product": product,
                     "orders": [],
+                    "scrap_breakdown": [],
                     "good_units": Decimal("0"),
                     "scrap_units": Decimal("0"),
                     "material_cost": Decimal("0.00"),
@@ -463,6 +532,7 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     "materials": {},
                     "has_missing_price": False,
                     "requires_review": False,
+                    "has_unvalued_scrap": False,
                     "line_ids": set(),
                     "line_good": {},
                 },
@@ -471,12 +541,14 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
         for slot in order_data.values():
             pdata = product_slot(slot["product"])
             pdata["orders"].append(slot)
+            pdata["scrap_breakdown"].extend(slot.get("scrap_breakdown", []))
             pdata["good_units"] += slot["good_units"]
             pdata["scrap_units"] += slot["scrap_units"]
             pdata["material_cost"] += slot["material_cost"]
             pdata["good_material_cost"] += slot["good_material_cost"]
             pdata["waste_material_cost"] += slot["waste_material_cost"]
             pdata["has_missing_price"] = pdata["has_missing_price"] or slot["has_missing_price"]
+            pdata["has_unvalued_scrap"] = pdata["has_unvalued_scrap"] or slot["has_unvalued_scrap"]
             if slot["production_line_id"]:
                 line_id = slot["production_line_id"]
                 pdata["line_ids"].add(line_id)
@@ -723,9 +795,10 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     cost_per_good_unit=slot.get("cost_per_good_unit"),
                     calculation_status=(
                         "INCOMPLETE"
-                        if slot["has_missing_price"] or slot["good_units"] <= 0
+                        if slot["has_missing_price"] or slot["has_unvalued_scrap"] or slot["good_units"] <= 0
                         else "COMPLETE"
                     ),
+                    scrap_breakdown=slot.get("scrap_breakdown", []),
                 )
             )
         ProductionOrderCostingEntry.objects.bulk_create(order_entries)
@@ -823,9 +896,23 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
                     material_cost_per_good_unit=material_cost_per_unit,
                     selling_price_snapshot=selling_price_obj.selling_price if selling_price_obj else None,
                     material_breakdown=breakdown,
+                    scrap_breakdown=pdata["scrap_breakdown"],
+                    # Historical snapshot: the exact standard (revision + approved
+                    # thresholds) used at calculation time, so later spec edits
+                    # never rewrite this period's classification basis.
+                    yield_standard=analysis.get("standard"),
+                    yield_standard_revision=(
+                        analysis["standard"].revision if analysis.get("standard") else None
+                    ),
+                    yield_scrap_threshold_percent=(
+                        analysis["standard"].max_scrap_percent if analysis.get("standard") else None
+                    ),
+                    yield_target_percent=(
+                        analysis["standard"].target_yield_percent if analysis.get("standard") else None
+                    ),
                     calculation_status=(
                         "INCOMPLETE"
-                        if pdata["has_missing_price"] or pdata.get("requires_review")
+                        if pdata["has_missing_price"] or pdata.get("requires_review") or pdata["has_unvalued_scrap"]
                         else "COMPLETE"
                     ),
                 )
@@ -840,8 +927,8 @@ def calculate_monthly_costing(*, year, month, allocation_policy=None, waste_poli
             for p in product_data.values()
         )
         header = [
-            "طريقة تقييم المواد الحالية: أسعار يدخلها المالك لكل مادة خام (Standard). "
-            "الأرقام مؤقتة إلى حين اعتماد طريقة تقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل تكلفة.",
+            "طريقة تقييم المواد الحالية: آخر سعر شراء للمادة (آخر استلام مشتريات ناجح). "
+            "الأرقام مؤقتة إلى حين اعتماد طريقة تقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح.",
             f"إجمالي تكلفة الهالك المنفصلة هذا الشهر: {grand_waste} ج.م "
             + (
                 "(سياسة تحميل الهالك على الوحدات الجيدة؛ تكلفة المواد كاملة محمّلة على الجيد)."

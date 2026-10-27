@@ -1,8 +1,11 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import uuid
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
@@ -15,7 +18,14 @@ from catalog.models import Product, ProductCategory, ProductUnitConversion, Unit
 from costing.models import CostingPeriod, ProductCostingEntry, ProductSellingPrice
 from inventory.models import StockMovement, StorageLocation, Warehouse
 from inventory.services import balance_for, post_movement, reverse_movement
-from manufacturing.models import ProductionLine, ProductionOrder, ProductionResult
+from manufacturing.models import (
+    BOMComponent,
+    BillOfMaterials,
+    ProductionLine,
+    ProductionMaterialRequirement,
+    ProductionOrder,
+    ProductionResult,
+)
 from purchasing.models import PurchaseOrder, Supplier
 from purchasing.services import (
     confirm_order as confirm_purchase_order,
@@ -42,6 +52,11 @@ class APITestCase(TestCase):
             password="owner-test-password",
             is_staff=True,
         )
+        self.owner.groups.add(Group.objects.get_or_create(name="ERP Owners")[0])
+        self.operational_staff = User.objects.create_user(
+            username=f"operator-{self.suffix}", password="operator-password", is_staff=True
+        )
+        self.operational_staff.groups.add(Group.objects.get_or_create(name="ERP Operational Staff")[0])
         perms = Permission.objects.filter(
             content_type__app_label__in=[
                 "manufacturing", "inventory", "costing", "purchasing", "sales"
@@ -169,6 +184,7 @@ class APITestCase(TestCase):
 
         self.anon = APIClient()
         self.owner_client = self._client_for(self.owner)
+        self.operational_client = self._client_for(self.operational_staff)
         self.customer_client = self._client_for(self.customer_user)
         self.other_customer_client = self._client_for(self.other_customer_user)
         self.unlinked_client = self._client_for(self.unlinked_user)
@@ -362,10 +378,233 @@ class APIUSAuthAndPermissionTests(APITestCase):
         self.assertEqual(self.customer_client.get(reverse("api:owner-dashboard")).status_code, 403)
         self.assertEqual(self.owner_client.get(reverse("api:customer-products")).status_code, 403)
 
+    def test_explicit_internal_api_roles_and_employee_contract(self):
+        unassigned_staff = get_user_model().objects.create_user(
+            username=f"unassigned-{self.suffix}", password="unassigned-password", is_staff=True
+        )
+        unassigned_client = self._client_for(unassigned_staff)
+        self.assertEqual(unassigned_client.get(reverse("api:owner-profit")).status_code, 403)
+        self.assertEqual(unassigned_client.get(reverse("api:employee-production-orders")).status_code, 403)
+        self.assertEqual(self.owner_client.get(reverse("api:owner-profit")).status_code, 200)
+        self.assertEqual(self.operational_client.get(reverse("api:owner-profit")).status_code, 403)
+        self.assertEqual(self.operational_client.get(reverse("api:owner-costing")).status_code, 403)
+        self.assertEqual(self.operational_client.get(reverse("api:employee-production-orders")).status_code, 200)
+        self.assertEqual(self.operational_client.get(reverse("api:employee-materials")).status_code, 200)
+        self.assertEqual(self.customer_client.get(reverse("api:employee-production-orders")).status_code, 403)
+        self.assertEqual(APIClient().get(reverse("api:employee-production-orders")).status_code, 401)
+        self.assertEqual(APIClient().get(reverse("api:owner-profit")).status_code, 401)
+
+    def test_employee_order_payload_exposes_real_unit_ids(self):
+        order = self._create_production()
+        bom = BillOfMaterials.objects.create(
+            product=self.product2,
+            version=1,
+            output_quantity=Decimal("1"),
+            output_unit=self.pcs,
+            created_by=self.owner,
+        )
+        component = BOMComponent.objects.create(
+            bom=bom,
+            material=self.product,
+            quantity=Decimal("1"),
+            unit=self.pcs,
+            sequence=1,
+        )
+        ProductionMaterialRequirement.objects.create(
+            order=order,
+            source_component=component,
+            material=self.product,
+            base_unit_snapshot=self.pcs,
+            sequence=1,
+            planned_quantity_base=Decimal("2"),
+        )
+
+        response = self.operational_client.get(reverse("api:employee-production-orders"))
+        self.assertEqual(response.status_code, 200)
+        row = next(item for item in response.json() if item["id"] == order.pk)
+        self.assertEqual(row["planned_unit_id"], self.pcs.pk)
+        self.assertEqual(row["materials"][0]["unit_id"], self.pcs.pk)
+
+        raw_category, _ = ProductCategory.objects.get_or_create(
+            code="raw-material",
+            defaults={"name_ar": "مواد خام", "name_en": "Raw materials", "active": True},
+        )
+        raw_material = Product.objects.create(
+            sku=f"RAW-MAT-{self.suffix}",
+            name_ar="رول ورق خام",
+            name_en="Raw paper roll",
+            category=raw_category,
+            base_uom=self.kg,
+        )
+
+        materials = self.operational_client.get(reverse("api:employee-materials"))
+        self.assertEqual(materials.status_code, 200)
+        material_row = next(
+            item for item in materials.json()["materials"] if item["id"] == raw_material.pk
+        )
+        self.assertEqual(material_row["base_unit_id"], self.kg.pk)
+
+    def test_operational_api_rejects_actor_role_and_timestamp_injection(self):
+        response = self.operational_client.post(
+            reverse("api:employee-production-progress"),
+            {"order_id": 1, "operation_id": 1, "quantity": "1", "unit_id": 1,
+             "actor": self.owner.pk, "posted_at": "2000-01-01T00:00:00Z"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("actor", response.data["error"]["detail"])
+        self.assertIn("posted_at", response.data["error"]["detail"])
+
+    def test_employee_write_adapters_use_domain_services_and_authenticated_actor(self):
+        fake = lambda model, **kwargs: SimpleNamespace(pk=kwargs.get("pk", 1), production_line="line")
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.record_operation_progress",
+            return_value=(SimpleNamespace(pk=1), True),
+        ) as progress:
+            response = self.operational_client.post(reverse("api:employee-production-progress"), {
+                "order_id": 1, "operation_id": 2, "quantity": "3", "unit_id": self.pcs.pk,
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(progress.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.complete_operation", return_value=SimpleNamespace(pk=2, status="COMPLETED")
+        ) as complete:
+            response = self.operational_client.post(reverse("api:employee-production-operation-complete"), {
+                "order_id": 1, "operation_id": 2,
+            }, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(complete.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.record_production_result",
+            return_value=(SimpleNamespace(pk=2, posted_at="server-time"), True),
+        ) as result_service:
+            response = self.operational_client.post(reverse("api:employee-production-results"), {
+                "order_id": 1, "good_quantity": "3", "scrap_quantity": "0", "unit_id": self.pcs.pk,
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(result_service.call_args.kwargs["actor"], self.operational_staff)
+            self.assertNotIn("posted_at", result_service.call_args.kwargs)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.record_production_material_waste",
+            return_value=SimpleNamespace(pk=7, posted_at="server-time"),
+        ) as waste_service:
+            response = self.operational_client.post(reverse("api:employee-production-waste", args=[2]), {
+                "material_id": self.internal_product.pk, "quantity_base": "1",
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(waste_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.confirm_no_material_waste",
+            return_value=SimpleNamespace(result_id=2, reviewed_at="server-time"),
+        ) as review_service:
+            response = self.operational_client.post(reverse("api:employee-production-waste-review", args=[2]), {}, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(review_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.issue_material", return_value=SimpleNamespace(pk="issue", movement=SimpleNamespace(posted_at="server-time"))
+        ) as issue_service:
+            response = self.operational_client.post(reverse("api:employee-material-issues"), {
+                "order_id": 1, "requirement_id": 2, "quantity": "1", "unit_id": self.kg.pk, "reference": "API-ISSUE-1",
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(issue_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.counter_services.start_counter_interval",
+            return_value=SimpleNamespace(pk=4, status="PROVISIONAL", started_at="server-time"),
+        ) as counter_service:
+            response = self.operational_client.post(reverse("api:employee-counter-start"), {
+                "order_id": 1, "unit_id": self.pcs.pk, "start_reading": "10",
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(counter_service.call_args.kwargs["actor"], self.operational_staff)
+            self.assertNotIn("started_at", counter_service.call_args.kwargs)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.counter_services.close_counter_interval",
+            return_value=SimpleNamespace(pk=4, status="COMPLETE"),
+        ) as close_service:
+            response = self.operational_client.post(reverse("api:employee-counter-action", args=[4, "close"]), {
+                "end_reading": "15",
+            }, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(close_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.counter_services.approve_counter_reading",
+            return_value=SimpleNamespace(pk=4, status="APPROVED"),
+        ) as approve_service:
+            response = self.operational_client.post(reverse("api:employee-counter-action", args=[4, "approve"]), {}, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(approve_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.counter_services.correct_counter_reading",
+            return_value=SimpleNamespace(pk=4, status="CORRECTED"),
+        ) as correction_service:
+            response = self.operational_client.post(reverse("api:employee-counter-action", args=[4, "correct"]), {
+                "reason": "audit correction",
+            }, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(correction_service.call_args.kwargs["actor"], self.operational_staff)
+
+        with patch("api.employee_api.get_object_or_404", side_effect=fake), patch(
+            "api.employee_api.services.receive_finished_goods",
+            return_value=SimpleNamespace(pk="receipt", reference="API-REC-1", movement=SimpleNamespace(posted_at="server-time")),
+        ) as receipt_service:
+            response = self.operational_client.post(reverse("api:employee-finished-receipts"), {
+                "order_id": 1, "quantity": "1", "unit_id": self.pcs.pk,
+                "location_id": self.location.pk, "reference": "API-REC-1",
+            }, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(receipt_service.call_args.kwargs["actor"], self.operational_staff)
+
     def test_token_logout_revokes_current_token(self):
         response = self.customer_client.post(reverse("api:logout"), format="json")
         self.assertEqual(response.status_code, 204)
         self.assertEqual(self.customer_client.get(reverse("api:customer-profile")).status_code, 401)
+
+    def test_current_user_me_endpoint_roles_and_permissions(self):
+        # 1. Unauthenticated returns 401
+        self.assertEqual(self.anon.get(reverse("api:me")).status_code, 401)
+
+        # 2. Owner user
+        resp = self.owner_client.get(reverse("api:me"))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["username"], self.owner.username)
+        self.assertEqual(data["role"], "OWNER")
+        self.assertTrue(data["is_owner"])
+        self.assertFalse(data["is_employee"])
+        self.assertFalse(data["is_customer"])
+        self.assertIsNone(data["customer_id"])
+
+        # 3. Operational employee user
+        resp = self.operational_client.get(reverse("api:me"))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["username"], self.operational_staff.username)
+        self.assertEqual(data["role"], "EMPLOYEE")
+        self.assertFalse(data["is_owner"])
+        self.assertTrue(data["is_employee"])
+        self.assertFalse(data["is_customer"])
+
+        # 4. Customer user
+        resp = self.customer_client.get(reverse("api:me"))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["username"], self.customer_user.username)
+        self.assertEqual(data["role"], "CUSTOMER")
+        self.assertFalse(data["is_owner"])
+        self.assertFalse(data["is_employee"])
+        self.assertTrue(data["is_customer"])
+        self.assertEqual(data["customer_id"], self.customer.pk)
+        self.assertEqual(data["customer_code"], self.customer.code)
 
     def test_schema_and_docs_are_staff_only(self):
         schema_response = self.owner_client.get(reverse("api:schema"))
@@ -405,6 +644,10 @@ class CustomerCatalogAPITests(APITestCase):
         product_row = next(row for row in data["results"] if row["sku"] == self.product.sku)
         self.assertEqual(product_row["reference_price"]["amount"], "12.5000")
         self.assertEqual(product_row["reference_price"]["price_type"], "OWNER_REFERENCE_PRICE")
+        self.assertEqual(product_row["base_uom"]["id"], self.pcs.pk)
+        self.assertEqual(product_row["reference_price"]["unit"]["id"], self.pcs.pk)
+        unit_ids = {unit["id"] for unit in product_row["units"]}
+        self.assertEqual(unit_ids, {self.pcs.pk, self.box.pk})
 
         detail = self.customer_client.get(
             reverse("api:customer-product-detail", args=[self.product.pk])
@@ -729,7 +972,7 @@ class OwnerDashboardAPITests(APITestCase):
         self.assertEqual(latest_period["labor_completeness"], "RECORDED")
         self.assertEqual(latest_period["allocation_policy"], CostingPeriod.AllocationPolicy.UNITS_PRODUCED)
         self.assertEqual(latest_period["waste_policy"], CostingPeriod.WastePolicy.ABSORBED_NORMAL)
-        self.assertEqual(latest_period["material_valuation_method"], "OWNER_STANDARD_PRICE")
+        self.assertEqual(latest_period["material_valuation_method"], "LAST_PURCHASE_COST")
         self.assertEqual(latest_period["actual_material_cost"], "80.00")
         self.assertEqual(latest_period["material_cost_assigned_to_good"], "80.00")
         self.assertEqual(latest_period["waste_material_cost"], "0.00")
@@ -884,6 +1127,7 @@ class OwnerDashboardAPITests(APITestCase):
         self.assertEqual(row["actual_material_cost"], "100.00")
         self.assertEqual(row["material_cost_assigned_to_good"], "80.00")
         self.assertEqual(row["waste_material_cost"], "20.00")
+        self.assertEqual(row["waste_cost_basis"], "ORDER_LEVEL_ALLOCATION_ESTIMATE")
         self.assertTrue(row["reconciliation"]["materials_reconcile"])
         self.assertTrue(row["reconciliation"]["cost_total_reconciles"])
         entry = costing["latest_period_entries"][0]

@@ -1,5 +1,5 @@
 from datetime import date
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 import uuid
 
 from django.core.exceptions import ValidationError
@@ -167,7 +167,7 @@ def issue_material(*, order, requirement, quantity, unit, reference, actor):
     if not reference or not reference.strip():
         raise ValidationError({"reference": "مرجع الصرف مطلوب لمنع التكرار."})
     with transaction.atomic():
-        from costing.models import ensure_period_open, lock_costing_month
+        from costing.models import ensure_period_open, lock_costing_month, RawMaterialPrice
 
         posting_date = timezone.localdate()
         # Month-scoped advisory lock: serializes against costing finalization
@@ -192,10 +192,13 @@ def issue_material(*, order, requirement, quantity, unit, reference, actor):
         if quantity_base > remaining:
             raise ValidationError({"quantity": f"الكمية تتجاوز المتبقي لهذا المتطلب ({remaining})."})
         issue_id = uuid.uuid4()
+        material = requirement.material
+        issue_occurred_at = timezone.now()
+
         movement = post_movement(
             reference=f"MFG-I-{issue_id.hex}",
             movement_type=StockMovement.Type.ISSUE,
-            product=requirement.material,
+            product=material,
             quantity=quantity,
             unit=unit,
             actor=actor,
@@ -204,12 +207,42 @@ def issue_material(*, order, requirement, quantity, unit, reference, actor):
             source_reference_type="manufacturing.material_issue",
             source_reference_id=str(issue_id),
             reason=f"صرف لأمر الإنتاج {order.order_number}",
+            occurred_at=issue_occurred_at,
         )
+
+        # Capture the price effective at the issue event, not the current LPC.
+        # A purchase receipt posted after this issue must never value it.
+        from inventory.services import get_last_purchase_cost_as_of
+
+        unit_cost_snapshot = get_last_purchase_cost_as_of(
+            material, movement.posted_at
+        )
+        cost_source = (
+            MaterialIssue.CostSource.LAST_PURCHASE_COST
+            if unit_cost_snapshot is not None
+            else None
+        )
+
+        # Fall back to the owner-entered standard price effective on/before the
+        # issue date; clearly labelled, never a later price.
+        if unit_cost_snapshot is None:
+            standard_price = RawMaterialPrice.objects.filter(
+                material=material,
+                effective_date__lte=timezone.localdate(movement.posted_at),
+            ).order_by("-effective_date", "-created_at").first()
+            if standard_price:
+                unit_cost_snapshot = standard_price.price_per_base_unit
+                cost_source = MaterialIssue.CostSource.STANDARD_PRICE_FALLBACK
+
+        if unit_cost_snapshot is None:
+            cost_source = MaterialIssue.CostSource.UNAVAILABLE
         try:
             with transaction.atomic():
                 issue = MaterialIssue.objects.create(
                     id=issue_id, order=order, requirement=requirement, reference=reference.strip(), movement=movement,
                     quantity=quantity, unit=unit, quantity_base=quantity_base, actor=actor,
+                    unit_cost_snapshot=unit_cost_snapshot,
+                    cost_source=cost_source,
                 )
         except IntegrityError as exc:
             cause = exc.__cause__
@@ -323,19 +356,22 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
     scrap_quantity = Decimal(scrap_quantity or 0)
     if good_quantity < 0 or scrap_quantity < 0 or good_quantity + scrap_quantity <= 0:
         raise ValidationError("أدخل كمية جيدة أو هالك موجبة؛ لا يمكن إدخال كميات سالبة.")
-    if occurred_at is None:
-        occurred_at = timezone.now()
+    # Keep the entered operational date separate from financial attribution.
+    entered_at = occurred_at or timezone.now()
+    posted_at = timezone.now()
     with transaction.atomic():
-        from costing.models import ensure_period_open, lock_costing_month
+        from costing.models import ensure_period_open, ensure_profit_period_open, lock_costing_month, lock_profit_month
 
-        posting_date = timezone.localdate(occurred_at)
+        posting_date = timezone.localdate(posted_at)
         # Month-scoped advisory lock: serializes against costing finalization
         # even when no CostingPeriod row exists for this month yet (a plain
         # select_for_update() would lock nothing in that case).
         lock_costing_month(posting_date.year, posting_date.month)
+        lock_profit_month(posting_date.year, posting_date.month)
         ensure_period_open(
             posting_date.year, posting_date.month, "تسجيل نتيجة إنتاج"
         )
+        ensure_profit_period_open(posting_date.year, posting_date.month, "تسجيل نتيجة إنتاج")
         order = ProductionOrder.objects.select_for_update().select_related("product").get(pk=order.pk)
         existing = ProductionResult.objects.filter(order=order, submission_key=submission_key).first()
         if existing:
@@ -350,7 +386,7 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
             raise ValidationError("تغيرت وحدة المنتج الأساسية بعد إطلاق الأمر؛ راجع بيانات الصنف قبل تسجيل الإنتاج.")
         good_base = to_base_quantity(order.product, good_quantity, unit) if good_quantity else Decimal("0")
         scrap_base = to_base_quantity(order.product, scrap_quantity, unit) if scrap_quantity else Decimal("0")
-        previous = order.results.aggregate(
+        previous = order.results.filter(correction__isnull=True).aggregate(
             good=Sum("good_quantity_base"), scrap=Sum("scrap_quantity_base")
         )
         produced = (previous["good"] or Decimal("0")) + (previous["scrap"] or Decimal("0"))
@@ -360,13 +396,188 @@ def record_production_result(*, order, good_quantity, scrap_quantity, unit, note
             submission_key=submission_key,
             order=order, good_quantity=good_quantity, scrap_quantity=scrap_quantity, unit=unit,
             good_quantity_base=good_base, scrap_quantity_base=scrap_base, notes=notes.strip(), actor=actor,
-            occurred_at=occurred_at,
+            occurred_at=entered_at,
+            posted_at=posted_at,
         )
         if order.status == ProductionOrder.Status.RELEASED:
             order._allow_status_transition = True
             order.status = ProductionOrder.Status.IN_PROGRESS
             order.save(update_fields=["status", "updated_at"])
         return result, True
+
+
+def _production_waste_cost(material, posted_at):
+    from costing.models import RawMaterialPrice
+    from inventory.services import get_last_purchase_cost_as_of
+    from .models import ProductionMaterialWaste
+
+    unit_cost = get_last_purchase_cost_as_of(material, posted_at)
+    if unit_cost is not None:
+        return unit_cost, ProductionMaterialWaste.CostSource.LAST_PURCHASE_COST
+    fallback = RawMaterialPrice.objects.filter(
+        material=material, effective_date__lte=timezone.localdate(posted_at)
+    ).order_by("-effective_date", "-created_at").first()
+    if fallback:
+        return fallback.price_per_base_unit, ProductionMaterialWaste.CostSource.STANDARD_PRICE_FALLBACK
+    return None, ProductionMaterialWaste.CostSource.UNAVAILABLE
+
+
+def record_production_material_waste(*, result, material, quantity_base, actor, material_issue=None, roll_reference=""):
+    from .models import ProductionMaterialWaste
+    require_permission(actor, "manufacturing.record_production_waste", "تسجيل هالك المواد")
+    require_staff(actor)
+    quantity_base = Decimal(quantity_base)
+    if quantity_base <= 0:
+        raise ValidationError({"quantity_base": "كمية الهالك المقاسة يجب أن تكون أكبر من صفر."})
+    with transaction.atomic():
+        posted_at = timezone.now()
+        posting_date = timezone.localdate(posted_at)
+        from costing.models import ensure_period_open, ensure_profit_period_open, lock_costing_month, lock_profit_month
+        lock_costing_month(posting_date.year, posting_date.month)
+        lock_profit_month(posting_date.year, posting_date.month)
+        ensure_period_open(posting_date.year, posting_date.month, "تسجيل هالك مواد الإنتاج")
+        ensure_profit_period_open(posting_date.year, posting_date.month, "تسجيل هالك مواد الإنتاج")
+        result = ProductionResult.objects.select_for_update().select_related("order").get(pk=result.pk)
+        if hasattr(result, "correction"):
+            raise ValidationError("لا يمكن إضافة هالك إلى نتيجة إنتاج معكوسة.")
+        order = ProductionOrder.objects.select_for_update().get(pk=result.order_id)
+        requirement = order.requirements.filter(material=material).first()
+        if requirement is None:
+            raise ValidationError({"material": "المادة لا تنتمي إلى متطلبات أمر الإنتاج."})
+        if material.base_uom_id != requirement.base_unit_snapshot_id:
+            raise ValidationError("تغيرت وحدة المادة الأساسية بعد إطلاق الأمر.")
+        if material_issue is not None and (material_issue.order_id != order.pk or material_issue.requirement_id != requirement.pk):
+            raise ValidationError({"material_issue": "صرف المادة لا يطابق مادة وأمر الإنتاج."})
+        if material_issue is not None:
+            material_issue = MaterialIssue.objects.select_related("movement").get(pk=material_issue.pk)
+            if hasattr(material_issue.movement, "reversal"):
+                raise ValidationError({"material_issue": "لا يمكن ربط الهالك بصرف مادة معكوس."})
+        from .models import ProductionMaterialWaste
+        already_wasted = ProductionMaterialWaste.objects.filter(
+            order=order, material=material, reversal_of__isnull=True
+        ).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+        reversed_waste = ProductionMaterialWaste.objects.filter(
+            reversal_of__order=order, reversal_of__material=material
+        ).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+        issued = order.material_issues.filter(
+            requirement=requirement, movement__reversal__isnull=True
+        ).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+        if already_wasted - reversed_waste + quantity_base > issued:
+            raise ValidationError({"quantity_base": "كمية الهالك تتجاوز كمية المادة المصروفة غير المعكوسة."})
+        if material_issue is not None:
+            issue_waste = ProductionMaterialWaste.objects.filter(
+                material_issue=material_issue, reversal_of__isnull=True
+            ).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+            issue_reversals = ProductionMaterialWaste.objects.filter(
+                reversal_of__material_issue=material_issue
+            ).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+            if issue_waste - issue_reversals + quantity_base > material_issue.quantity_base:
+                raise ValidationError({"quantity_base": "كمية الهالك تتجاوز الكمية المتاحة من صرف المادة المرتبط."})
+        unit_cost, cost_source = _production_waste_cost(material, posted_at)
+        row = ProductionMaterialWaste.objects.create(
+            order=order, result=result, material=material, material_issue=material_issue,
+            roll_reference=(roll_reference or "").strip(), quantity_base=quantity_base,
+            unit_cost_snapshot=unit_cost,
+            total_cost_snapshot=(quantity_base * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if unit_cost is not None else None,
+            cost_source=cost_source, actor=actor,
+        )
+        return row
+
+
+def confirm_no_material_waste(*, result, actor):
+    """Explicitly record a reviewed zero; absence of detail alone is not zero."""
+    require_permission(actor, "manufacturing.record_production_waste", "مراجعة هالك المواد")
+    require_staff(actor)
+    from .models import ProductionWasteReview
+    with transaction.atomic():
+        result = ProductionResult.objects.get(pk=result.pk)
+        if result.posted_at is None:
+            raise ValidationError("لا يمكن مراجعة نتيجة قديمة بلا وقت ترحيل موثوق؛ راجع الفترة يدويًا.")
+        moment = timezone.localtime(result.posted_at)
+        from costing.models import ensure_period_open, ensure_profit_period_open, lock_costing_month, lock_profit_month
+        lock_costing_month(moment.year, moment.month)
+        lock_profit_month(moment.year, moment.month)
+        ensure_period_open(moment.year, moment.month, "مراجعة هالك مواد الإنتاج")
+        ensure_profit_period_open(moment.year, moment.month, "مراجعة هالك مواد الإنتاج")
+        result = ProductionResult.objects.select_for_update().get(pk=result.pk)
+        if hasattr(result, "correction"):
+            raise ValidationError("لا يمكن مراجعة نتيجة إنتاج معكوسة.")
+        if hasattr(result, "waste_review"):
+            raise ValidationError("تمت مراجعة المواد لهذه النتيجة بالفعل.")
+        if result.material_waste.filter(reversal_of__isnull=True, reversal__isnull=True).exists():
+            raise ValidationError("توجد قياسات هالك مسجلة لهذه النتيجة؛ لا يمكن تأكيد عدم وجود هالك.")
+        return ProductionWasteReview.objects.create(result=result, actor=actor)
+
+
+def reverse_production_material_waste(*, waste, actor, reason):
+    from .models import ProductionMaterialWaste
+    require_permission(actor, "manufacturing.record_production_waste", "عكس هالك المواد")
+    require_staff(actor)
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError({"reason": "سبب العكس إلزامي."})
+    with transaction.atomic():
+        moment = timezone.now()
+        original = ProductionMaterialWaste.objects.select_related("result").get(pk=waste.pk)
+        original_month = timezone.localdate(original.posted_at).replace(day=1)
+        posting_month = timezone.localdate(moment).replace(day=1)
+        from costing.models import ensure_period_open, ensure_profit_period_open, lock_costing_month, lock_profit_month
+        months = sorted({(original_month.year, original_month.month), (posting_month.year, posting_month.month)})
+        for year, month in months:
+            lock_costing_month(year, month)
+        for year, month in months:
+            lock_profit_month(year, month)
+        for year, month in months:
+            ensure_period_open(year, month, "عكس هالك مواد الإنتاج")
+            ensure_profit_period_open(year, month, "عكس هالك مواد الإنتاج")
+        original = ProductionMaterialWaste.objects.select_for_update().get(pk=waste.pk)
+        if original.reversal_of_id or hasattr(original, "reversal"):
+            raise ValidationError("سجل الهالك معكوس بالفعل أو لا يمكن عكس سجل عكسي.")
+        reversal = ProductionMaterialWaste.objects.create(
+            order=original.order, result=original.result, material=original.material,
+            material_issue=original.material_issue, roll_reference=original.roll_reference,
+            quantity_base=original.quantity_base, unit_cost_snapshot=original.unit_cost_snapshot,
+            total_cost_snapshot=original.total_cost_snapshot, cost_source=original.cost_source,
+            actor=actor, reversal_of=original, correction_reason=reason,
+        )
+        return reversal
+
+
+def reverse_production_result(*, result, actor, reason):
+    """Keep the posted result intact and append one audited compensating reversal.
+
+    Re-enter the corrected quantities as a new ProductionResult after reversal;
+    this keeps the original, correction reason, actor, and effective reports
+    separately auditable.
+    """
+    from .models import ProductionResultReversal
+    require_permission(actor, "manufacturing.correct_production_result", "تصحيح نتيجة الإنتاج")
+    require_staff(actor)
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError({"reason": "سبب تصحيح نتيجة الإنتاج إلزامي."})
+    with transaction.atomic():
+        result = ProductionResult.objects.select_related("order").get(pk=result.pk)
+        if result.posted_at is None:
+            raise ValidationError("لا يمكن عكس نتيجة قديمة بلا وقت ترحيل موثوق؛ راجع الفترة يدويًا.")
+        posting_date = timezone.localdate(result.posted_at)
+        from costing.models import ensure_period_open, ensure_profit_period_open, lock_costing_month, lock_profit_month
+        lock_costing_month(posting_date.year, posting_date.month)
+        lock_profit_month(posting_date.year, posting_date.month)
+        ensure_period_open(posting_date.year, posting_date.month, "عكس نتيجة الإنتاج")
+        ensure_profit_period_open(posting_date.year, posting_date.month, "عكس نتيجة الإنتاج")
+        result = ProductionResult.objects.select_for_update().select_related("order").get(pk=result.pk)
+        if hasattr(result, "correction"):
+            raise ValidationError("نتيجة الإنتاج معكوسة بالفعل.")
+        order = ProductionOrder.objects.select_for_update().get(pk=result.order_id)
+        active_good = order.results.filter(correction__isnull=True).aggregate(total=Sum("good_quantity_base"))["total"] or Decimal("0")
+        received = order.finished_receipts.filter(movement__reversal__isnull=True).aggregate(total=Sum("quantity_base"))["total"] or Decimal("0")
+        if received > active_good - result.good_quantity_base:
+            raise ValidationError(
+                "لا يمكن عكس نتيجة لها منتج جيد مستلم؛ اعكس أو صحح استلام المخزون أولًا. "
+                "نتيجة الإنتاج لا تملك حركة مخزون مرتبطة تلقائيًا."
+            )
+        return ProductionResultReversal.objects.create(result=result, actor=actor, reason=reason)
 
 
 def receive_finished_goods(*, order, quantity, unit, destination_location, reference, actor):
@@ -401,7 +612,7 @@ def _receive_finished_goods(*, order, quantity, unit, destination_location, refe
         if FinishedGoodsReceipt.objects.filter(reference=reference.strip()).exists():
             raise ValidationError({"reference": "مرجع استلام المنتج مستخدم من قبل."})
         quantity_base = to_base_quantity(order.product, quantity, unit)
-        good_total = order.results.aggregate(total=Sum("good_quantity_base"))["total"] or Decimal("0")
+        good_total = order.results.filter(correction__isnull=True).aggregate(total=Sum("good_quantity_base"))["total"] or Decimal("0")
         already_received = order.finished_receipts.filter(movement__reversal__isnull=True).aggregate(
             total=Sum("quantity_base")
         )["total"] or Decimal("0")
@@ -450,7 +661,7 @@ def complete_order(*, order, actor):
         order = ProductionOrder.objects.select_for_update().get(pk=order.pk)
         if order.status not in ACTIVE_ORDER_STATUSES:
             raise ValidationError("يمكن إكمال أمر مطلق أو قيد التنفيذ فقط.")
-        totals = order.results.aggregate(good=Sum("good_quantity_base"), scrap=Sum("scrap_quantity_base"))
+        totals = order.results.filter(correction__isnull=True).aggregate(good=Sum("good_quantity_base"), scrap=Sum("scrap_quantity_base"))
         good = totals["good"] or Decimal("0")
         scrap = totals["scrap"] or Decimal("0")
         if good + scrap <= 0:
@@ -484,8 +695,9 @@ def cancel_order(*, order, actor):
 
 
 def order_summary(order):
-    good = order.results.aggregate(total=Sum("good_quantity_base"))["total"] or Decimal("0")
-    scrap = order.results.aggregate(total=Sum("scrap_quantity_base"))["total"] or Decimal("0")
+    active_results = order.results.filter(correction__isnull=True)
+    good = active_results.aggregate(total=Sum("good_quantity_base"))["total"] or Decimal("0")
+    scrap = active_results.aggregate(total=Sum("scrap_quantity_base"))["total"] or Decimal("0")
     received = order.finished_receipts.filter(movement__reversal__isnull=True).aggregate(
         total=Sum("quantity_base")
     )["total"] or Decimal("0")

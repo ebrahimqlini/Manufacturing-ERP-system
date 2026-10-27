@@ -13,8 +13,8 @@
 </div>
 
 <div class="alert alert-secondary shadow-sm small">
-  <strong>طريقة تقييم المواد:</strong> OWNER_STANDARD_PRICE (سعر مالك يدوي لكل مادة خام).
-  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح لأن قيد المخزون لا يحمل بيانات تكلفة.
+  <strong>طريقة تقييم المواد:</strong> LAST_PURCHASE_COST (آخر سعر شراء للمادة).
+  الأرقام <strong>مؤقتة</strong> إلى حين اعتماد طريقة التقييم من المحاسب؛ لا تُحتسب بـ FIFO أو المتوسط المرجح.
 </div>
 
 <div class="alert alert-secondary shadow-sm small">
@@ -99,7 +99,7 @@
             <th>الكهرباء</th>
             <th>المياه</th>
             <th>مصاريف أخرى</th>
-            <th>تكلفة الهالك المنفصلة</th>
+            <th>تقدير تكلفة الهالك الموزع</th>
             <th>إجمالي التكلفة</th>
             <th>تكلفة الوحدة الجيدة</th>
             <th>Δ الكهرباء</th>
@@ -123,7 +123,7 @@
             <td class="text-primary">{{ row.entry.allocated_electricity_cost|floatformat:2 }} ج.م</td>
             <td class="text-primary">{{ row.entry.allocated_water_cost|floatformat:2 }} ج.م</td>
             <td>{{ row.entry.allocated_other_cost|floatformat:2 }} ج.م</td>
-            <td class="text-warning">{{ row.entry.waste_material_cost|floatformat:2 }} ج.م</td>
+            <td class="text-warning">{{ row.entry.waste_material_cost|floatformat:2 }} ج.م<br><small>تقدير على مستوى الأمر</small></td>
             <td><strong>{{ row.entry.total_production_cost|floatformat:2 }} ج.م</strong></td>
             <td class="fw-bold">
               {% if row.entry.cost_per_good_unit %}{{ row.entry.cost_per_good_unit|floatformat:4 }} ج.م{% else %}—{% endif %}

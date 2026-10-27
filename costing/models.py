@@ -218,11 +218,61 @@ class RollYieldStandard(models.Model):
     )
     active = models.BooleanField("نشط", default=True)
     notes = models.CharField("ملاحظات", max_length=240, blank=True)
+    supplier_name = models.CharField(
+        "المورد أو مصدر المواصفة",
+        max_length=180,
+        blank=True,
+        help_text=(
+            "اسم مورد المادة الخام أو مصدر المواصفة المعتمدة؛ يُحفظ كنص وثّق "
+            "دون ربط بسجل المورد التلقائي."
+        ),
+    )
+    specification_reference = models.CharField(
+        "مرجع المواصفة",
+        max_length=120,
+        blank=True,
+        help_text="رقم أو مرجع وثيقة مواصفة المورد / المواصفة الداخلية.",
+    )
+    revision = models.PositiveSmallIntegerField(
+        "إصدار المواصفة",
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    effective_date = models.DateField("تاريخ سريان المواصفة", null=True, blank=True)
+    target_yield_percent = models.DecimalField(
+        "نسبة العائد المستهدفة %",
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.01")), MaxValueValidator(Decimal("100"))],
+        help_text="تُملأ فقط عند اعتمادها صراحةً؛ لا يُفترض أي قيمة افتراضية.",
+    )
+    max_scrap_percent = models.DecimalField(
+        "أقصى نسبة هالك مقبولة %",
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
+        help_text=(
+            "حد الهالك الأقصى المعتمد؛ يُترك فارغًا حين لا يوجد حد معتمد حتى "
+            "لا يُصنَّف الهالك طبيعيًا أو زائدًا دون سند."
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="created_yield_standards",
         verbose_name="أنشئ بواسطة",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="updated_yield_standards",
+        verbose_name="عُدِّل بواسطة",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -237,6 +287,22 @@ class RollYieldStandard(models.Model):
             models.CheckConstraint(
                 condition=Q(expected_cartons_per_roll__gt=0),
                 name="expected_cartons_per_roll_positive",
+            ),
+            models.CheckConstraint(
+                condition=Q(target_yield_percent__isnull=True)
+                | (
+                    Q(target_yield_percent__gte=Decimal("0.01"))
+                    & Q(target_yield_percent__lte=Decimal("100"))
+                ),
+                name="yield_target_percent_range",
+            ),
+            models.CheckConstraint(
+                condition=Q(max_scrap_percent__isnull=True)
+                | (
+                    Q(max_scrap_percent__gte=Decimal("0"))
+                    & Q(max_scrap_percent__lte=Decimal("100"))
+                ),
+                name="yield_max_scrap_percent_range",
             ),
         ]
         verbose_name = "معيار إنتاجية الرول"
@@ -520,12 +586,12 @@ class CostingPeriod(models.Model):
     material_valuation_method = models.CharField(
         "طريقة تقييم المواد",
         max_length=30,
-        choices=[("OWNER_STANDARD_PRICE", "سعر مالك يدوي لكل مادة خام (Standard)")],
-        default="OWNER_STANDARD_PRICE",
+        choices=[("LAST_PURCHASE_COST", "آخر سعر شراء للمادة (Last Purchase Cost)")],
+        default="LAST_PURCHASE_COST",
         editable=False,
         help_text=(
-            "الطريقة الوحيدة المدعومة حاليًا لأن قيد المخزون لا يحمل بيانات تكلفة؛ "
-            "بديل FIFO/المتوسط المرجح غير متاح حتى تُرحّل تكاليف المشتريات. الأرقام مؤقتة حتى يعتمدها المحاسب."
+            "الطريقة الوحيدة المدعومة حاليًا: آخر سعر شراء من استلام مشتريات صحيح، "
+            "بحسب وقت الترحيل الناجح للنظام. سعر المالك المؤرخ احتياطي معلن عند غياب LPC."
         ),
     )
     labor_recorded = models.BooleanField(
@@ -688,6 +754,38 @@ class ProductCostingEntry(models.Model):
         decimal_places=4,
         default=Decimal("0"),
     )
+    yield_standard = models.ForeignKey(
+        RollYieldStandard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="costing_entries",
+        verbose_name="معيار العائد المستخدم وقت الاحتساب",
+        help_text=(
+            "يُحفظ للاحتفاظ بمرجع المعيار المستخدم وقت الاحتساب؛ قيم العتبات "
+            "أسفله لقطة ثابتة لا تتغير بتعديل المعيار لاحقًا."
+        ),
+    )
+    yield_standard_revision = models.PositiveSmallIntegerField(
+        "إصدار معيار العائد وقت الاحتساب",
+        null=True,
+        blank=True,
+    )
+    yield_scrap_threshold_percent = models.DecimalField(
+        "عتبة الهالك القصوى وقت الاحتساب %",
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="لقطة من الحد المعتمد وقت الاحتساب؛ null تعني عدم وجود حد وقتها.",
+    )
+    yield_target_percent = models.DecimalField(
+        "نسبة العائد المستهدفة وقت الاحتساب %",
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     actual_material_cost = models.DecimalField(
         "تكلفة المواد الفعلية (ج.م)",
         max_digits=18,
@@ -702,11 +800,14 @@ class ProductCostingEntry(models.Model):
         default=Decimal("0.00"),
     )
     waste_material_cost = models.DecimalField(
-        "تكلفة المواد المنفصلة عن الهالك (ج.م)",
+        "تكلفة هالك المواد المقاس (ج.م)",
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
-        help_text="صفر عندما تكون سياسة الهالك «تحميل على الجيد»؛ لا تُضاف فوق إجمالي تكلفة المواد حتى لا تُحتسب المادة مرتين.",
+        help_text=(
+            "مجموع تكلفة هالك المواد المقاس والمُقيّم وقت الترحيل. القيمة غير المتاحة "
+            "تبقى فارغة في سجل الحدث وتمنع اكتمال الفترة."
+        ),
     )
     allocated_labor_cost = models.DecimalField(
         "نصيب العمالة (ج.م)",
@@ -766,6 +867,12 @@ class ProductCostingEntry(models.Model):
         help_text="سعر البيع المعتمد من المالك للعرض المقارن فقط دون احتساب أرباح.",
     )
     material_breakdown = models.JSONField("تفاصيل استهلاك وتسعير المواد", default=list)
+    # Immutable event snapshots copied from measured material-waste records.
+    scrap_breakdown = models.JSONField(
+        "تفاصيل الهالك لكل مادة",
+        default=list,
+        help_text="تفاصيل أحداث قياس الهالك المادي والقيم المثبتة وقت الترحيل.",
+    )
     calculation_status = models.CharField("حالة الاحتساب", max_length=20, default="COMPLETE")
     notes = models.TextField("ملاحظات", blank=True)
 
@@ -820,7 +927,13 @@ class ProductionOrderCostingEntry(models.Model):
     material_cost_assigned_to_good = models.DecimalField(
         "تكلفة المواد المحمّلة على الجيد (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00")
     )
-    waste_material_cost = models.DecimalField("تكلفة المواد المنفصلة عن الهالك (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    waste_material_cost = models.DecimalField(
+        "تكلفة الهالك المادي المقاس (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="مجموع تكاليف أحداث الهالك المادي المسجلة لهذا الأمر وفق سعر الوحدة وقت الترحيل.",
+    )
     allocated_labor_cost = models.DecimalField("نصيب العمالة (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     allocated_electricity_cost = models.DecimalField("نصيب الكهرباء (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     allocated_water_cost = models.DecimalField("نصيب المياه (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00"))
@@ -828,6 +941,18 @@ class ProductionOrderCostingEntry(models.Model):
     total_production_cost = models.DecimalField("إجمالي تكلفة الأمر (ج.م)", max_digits=18, decimal_places=2, default=Decimal("0.00"))
     cost_per_good_unit = models.DecimalField(
         "تكلفة الوحدة الجيدة (ج.م)", max_digits=18, decimal_places=4, null=True, blank=True
+    )
+    # Immutable per-event material waste valuation snapshots used by costing reports.
+    scrap_breakdown = models.JSONField(
+        "تفاصيل الهالك لكل مادة",
+        default=list,
+        help_text="لقطات أحداث الهالك المادي المرتبطة بأوامر هذا المنتج خلال الفترة.",
+    )
+    # Reserved schema compatibility for the same unresolved attribution design.
+    # The current engine never sets it; it exists only so an already-applied
+    # forward migration remains consistent without dropping columns.
+    yield_classification = models.CharField(
+        "تصنيف الهالك التشغيلي (محجوز)", max_length=30, blank=True, default=""
     )
     calculation_status = models.CharField("حالة الاحتساب", max_length=20, default="COMPLETE")
 
@@ -912,6 +1037,12 @@ class MonthlyProfitPeriod(models.Model):
         DRAFT = "DRAFT", "مبدئي / قابل للتعديل"
         FINALIZED = "FINALIZED", "معتمد نهائيًا"
 
+    class ScrapTreatment(models.TextChoices):
+        NONE = "NONE", "لا يوجد هالك مالي معترف به"
+        ABSORBED = "ABSORBED_IN_PRODUCT_COST", "مضمّن في تكلفة الوحدات الجيدة"
+        SEPARATED = "SEPARATED_DEDUCTED", "مفصل ومخصوم كخط خسارة من نتيجة الشهر"
+        NO_COSTING = "NO_COSTING_PERIOD", "لا توجد فترة تكاليف مرتبطة"
+
     year = models.PositiveSmallIntegerField("السنة")
     month = models.PositiveSmallIntegerField(
         "الشهر",
@@ -991,6 +1122,42 @@ class MonthlyProfitPeriod(models.Model):
         max_digits=18,
         decimal_places=2,
         default=Decimal("0.00"),
+    )
+    separated_scrap_loss = models.DecimalField(
+        "خسارة الهالك المفصل المخصومة من نتيجة الشهر (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text=(
+            "الجزء من تكلفة الهالك المعزول عن تكلفة الوحدات الجيدة بواسطة سياسة "
+            "الفترة ولم يدخل تكلفة الإنتاج أو تكلفة البضاعة المباعة؛ يُخصم مرة واحدة فقط."
+        ),
+    )
+    absorbed_scrap_cost = models.DecimalField(
+        "تكلفة الهالك المحمّلة ضمن تكلفة الإنتاج (ج.م، عرض فقط)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text=(
+            "تكلفة أحداث الهالك المادي المقاس والمعترف بها ضمن تكلفة الإنتاج تحت "
+            "سياسة التحميل؛ لا تُخصم مرة أخرى لأنها ضمن تكلفة الوحدة ثم COGS عند البيع."
+        ),
+    )
+    unreconciled_scrap_cost = models.DecimalField(
+        "تكلفة هالك غير محوَّلة أو غير مؤكدة (ج.م)",
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text=(
+            "هالك مفصل لا يزال غير مخصوم: إنتاج غير مكتمل أو احتساب غير معتمد؛ "
+            "يُعرض صراحةً ولا يُخصم من نتيجة الشهر."
+        ),
+    )
+    scrap_treatment = models.CharField(
+        "معالجة الهالك في النتيجة",
+        max_length=30,
+        choices=ScrapTreatment.choices,
+        default=ScrapTreatment.NONE,
     )
 
     labor_recorded = models.BooleanField("تم تسجيل مصاريف العمالة", default=False, editable=False)

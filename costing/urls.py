@@ -38,6 +38,7 @@ urlpatterns = [
     path("yield-standards/", views.yield_standard_list, name="yield_standard_list"),
     path("yield-standards/add/", views.yield_standard_create, name="yield_standard_create"),
     path("yield-standards/<int:pk>/edit/", views.yield_standard_edit, name="yield_standard_edit"),
+    path("yield-report/", views.yield_report_view, name="yield_report"),
 
     # Selling Prices (Display-Only)
     path("selling-prices/", views.selling_price_list, name="selling_price_list"),

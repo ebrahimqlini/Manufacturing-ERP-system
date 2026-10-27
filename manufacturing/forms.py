@@ -9,6 +9,7 @@ from inventory.models import StorageLocation
 from .models import (
     BillOfMaterials,
     BOMComponent,
+    MachineCounterReading,
     OperationProgress,
     ProductionLine,
     ProductionOperation,
@@ -30,7 +31,7 @@ class ArabicFormMixin:
 class ProductionLineForm(ArabicFormMixin, forms.ModelForm):
     class Meta:
         model = ProductionLine
-        fields = ("code", "name_ar", "name_en", "active")
+        fields = ("code", "name_ar", "name_en", "active", "counter_behavior")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -189,6 +190,43 @@ class ProductionResultForm(ArabicFormMixin, forms.Form):
         self.apply_arabic_widgets()
 
 
+class ProductionMaterialWasteForm(ArabicFormMixin, forms.Form):
+    material = forms.ModelChoiceField(label="المادة الخام التالفة", queryset=Product.objects.none())
+    quantity_base = forms.DecimalField(label="الكمية التالفة بالوحدة الأساسية", max_digits=30, decimal_places=12, min_value=0)
+    material_issue = forms.ModelChoiceField(label="صرف المادة (اختياري)", queryset=None, required=False)
+    roll_reference = forms.CharField(label="مرجع الرول (اختياري)", max_length=120, required=False)
+
+    def __init__(self, *args, order, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["material"].queryset = Product.objects.filter(
+            production_requirements__order=order, active=True
+        ).distinct().select_related("base_uom")
+        self.fields["material"].label_from_instance = lambda material: (
+            f"{material.name_ar} ({material.sku}) — الوحدة الأساسية: {material.base_uom.code}"
+        )
+        self.fields["quantity_base"].help_text = "أدخل الكمية المقاسة بوحدة المادة الأساسية المعروضة أعلاه."
+        self.fields["material_issue"].queryset = order.material_issues.filter(
+            movement__reversal__isnull=True
+        ).select_related("requirement__material")
+        self.apply_arabic_widgets()
+
+
+class ProductionResultCorrectionForm(ArabicFormMixin, forms.Form):
+    reason = forms.CharField(label="سبب عكس / تصحيح نتيجة الإنتاج", max_length=255)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.apply_arabic_widgets()
+
+
+class ProductionWasteReversalForm(ArabicFormMixin, forms.Form):
+    reason = forms.CharField(label="سبب عكس سجل هالك المواد", max_length=255)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.apply_arabic_widgets()
+
+
 class FinishedGoodsReceiptForm(ArabicFormMixin, forms.Form):
     reference = forms.CharField(label="مرجع استلام فريد", max_length=100)
     quantity = forms.DecimalField(label="الكمية المستلمة", max_digits=30, decimal_places=12, min_value=0)
@@ -199,4 +237,96 @@ class FinishedGoodsReceiptForm(ArabicFormMixin, forms.Form):
         super().__init__(*args, **kwargs)
         self.fields["unit"].queryset = UnitOfMeasure.objects.filter(active=True)
         self.fields["destination_location"].queryset = StorageLocation.objects.filter(active=True, warehouse__active=True).select_related("warehouse")
+        self.apply_arabic_widgets()
+
+
+class CounterStartForm(ArabicFormMixin, forms.Form):
+    """Worker enters the physical start value shown on the machine."""
+
+    unit = forms.ModelChoiceField(label="وحدة العدّ", queryset=UnitOfMeasure.objects.none())
+    start_reading = forms.DecimalField(
+        label="قراءة العدّاد عند البداية", max_digits=20, decimal_places=4, min_value=0
+    )
+    started_at = forms.DateTimeField(label="وقت بدء القراءة", required=False)
+    material_issue = forms.ModelChoiceField(
+        label="صرف المادة المرتبط (اختياري)",
+        queryset=None,
+        required=False,
+        help_text="للتتبع الجزئي للرول؛ اختر الصرف الذي وُزِّعت منه رولات هذه الفترة.",
+    )
+    roll_reference = forms.CharField(label="مرجع الرول", max_length=120, required=False)
+    notes = forms.CharField(label="ملاحظات", max_length=240, required=False)
+    continuation_of = forms.ModelChoiceField(
+        label="متابعة لقراءة سابقة (عند إعادة ضبط العدّاد)",
+        queryset=None,
+        required=False,
+    )
+    reset_reason = forms.CharField(
+        label="سبب إعادة الضبط / الاستمرار", max_length=240, required=False
+    )
+
+    def __init__(self, *args, order, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["unit"].queryset = UnitOfMeasure.objects.filter(active=True)
+        self.fields["material_issue"].queryset = order.material_issues.filter(
+            movement__reversal__isnull=True
+        )
+        self.fields["continuation_of"].queryset = MachineCounterReading.objects.filter(
+            order=order, end_reading__isnull=False
+        )
+        self.apply_arabic_widgets()
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("continuation_of") and not (cleaned.get("reset_reason") or "").strip():
+            self.add_error("reset_reason", "سبب إعادة الضبط إلزامي عند متابعة قراءة سابقة.")
+        return cleaned
+
+
+class CounterCloseForm(ArabicFormMixin, forms.Form):
+    """Worker reads the end value; rejected quantity can never exceed output."""
+
+    end_reading = forms.DecimalField(
+        label="قراءة العدّاد عند النهاية", max_digits=20, decimal_places=4, min_value=0
+    )
+    ended_at = forms.DateTimeField(label="وقت إغلاق القراءة", required=False)
+    rejected_quantity = forms.DecimalField(
+        label="الكمية المرفوضة (إن لم يستبعدها العدّاد)",
+        max_digits=20,
+        decimal_places=4,
+        min_value=0,
+        required=False,
+    )
+
+    def __init__(self, *args, reading, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reading = reading
+        self.fields["end_reading"].initial = reading.start_reading
+        self.apply_arabic_widgets()
+
+
+class CounterCorrectionForm(ArabicFormMixin, forms.Form):
+    """Mandatory-reason correction; superseded values are archived by service."""
+
+    reason = forms.CharField(
+        label="سبب التصحيح (إلزامي)", max_length=240,
+        help_text="يُحفظ في سجل التدقيق مع القيم المستبدلة.",
+    )
+    start_reading = forms.DecimalField(
+        label="قراءة البداية الجديدة (اتركها فارغة لعدم تغييرها)",
+        max_digits=20, decimal_places=4, min_value=0, required=False,
+    )
+    end_reading = forms.DecimalField(
+        label="قراءة النهاية الجديدة (اتركها فارغة لعدم تغييرها)",
+        max_digits=20, decimal_places=4, min_value=0, required=False,
+    )
+    rejected_quantity = forms.DecimalField(
+        label="الكمية المرفوضة الجديدة (اتركها فارغة لعدم تغييرها)",
+        max_digits=20, decimal_places=4, min_value=0, required=False,
+    )
+    notes = forms.CharField(label="ملاحظات جديدة", max_length=240, required=False)
+
+    def __init__(self, *args, reading, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reading = reading
         self.apply_arabic_widgets()

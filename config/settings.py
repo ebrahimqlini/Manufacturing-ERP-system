@@ -158,7 +158,7 @@ REST_FRAMEWORK = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "Manufacturing ERP Mobile API",
     "DESCRIPTION": (
-        "Versioned API foundation for the customer and owner mobile applications. "
+        "Versioned API for customer, owner, and operational staff applications. "
         "Commercial sales and purchase values are not accounting revenue or expense."
     ),
     "VERSION": "1.0.0",

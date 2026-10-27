@@ -1,8 +1,8 @@
 # Paper-products factory ERP foundation
 
-Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with owner-entered provisional prices, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, required labor/electricity/water records with a confirmed zero kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots kept separate from costing valuation. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation. A versioned mobile API foundation under `/api/v1/` adds token authentication, strict customer data isolation, draft customer order requests, and an owner dashboard projection over existing operational and persisted costing data. Customer-submitted orders with zero prices cannot be confirmed or shipped until staff review every line; dashboard document counts and production date bases are explicit, and persisted costing allocation/reconciliation fields are exposed without recalculating product costs. A monthly management-profit step adds operating-expense recording, COGS for shipped quantities from persisted direct-material costs, finalization controls, cross-month and year-boundary loss carry-forward, a staff profit report, and a read-only owner API projection. Its figures are management operating results, not final accounting net profit.
+Shared Django ERP for a paper-products factory with two production lines: paper cups and paper-fiber food containers/trays. Prompt 1 provides the shared catalog, warehouses, and immutable stock ledger. Prompt 2 adds configurable production lines, BOMs, routings, orders, material issues, operation progress, good/scrap results, and finished receipts through the same inventory ledger. A monthly product-costing step (a separate prompt from the later shared-accounting phase) adds monthly product costing: actual material issues priced with issue-time LPC snapshots or a labeled dated fallback, labor/electricity/water/other operating expenses allocated by a selectable policy, explicit monthly start/end attribution with no carry-forward, required labor/electricity/water records with a confirmed zero kept distinct from an unrecorded one, waste handling, per-product and per-order breakdowns, a per-product month-over-month comparison, and a draft/finalize/reopen lifecycle. The only confirmed fiber-container process fact is pressing fiber material in a mold; other stages and factory-specific inputs remain unconfirmed and are not configured as recipes or product routes. A shared purchasing step adds supplier records, draft/confirmed purchase orders, and partial receipts that post into the same inventory ledger, with purchase-price snapshots that update LPC only after a valid receipt is successfully posted. A shared sales step adds customer records, draft/confirmed/completed sales orders, and partial shipments that issue finished goods through the same inventory ledger, with sales-price snapshots kept separate from costing valuation. A versioned mobile API foundation under `/api/v1/` adds token authentication, strict customer data isolation, draft customer order requests, and an owner dashboard projection over existing operational and persisted costing data. Customer-submitted orders with zero prices cannot be confirmed or shipped until staff review every line; dashboard document counts and production date bases are explicit, and persisted costing allocation/reconciliation fields are exposed without recalculating product costs. A monthly management-profit step adds operating-expense recording, COGS for shipped quantities from persisted direct-material costs, finalization controls, cross-month and year-boundary loss carry-forward, a staff profit report, and a read-only owner API projection. Its figures are management operating results, not final accounting net profit.
 
-The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers remain out of scope until factory policy is confirmed. Monthly product costing is implemented, but it prices material consumption with owner-entered provisional standard prices and does not use FIFO or weighted average, because no valuation method is approved and the stock ledger carries no cost; costs are therefore provisional until an accountant approves a valuation method. Shared purchasing and supplier management is implemented: suppliers, purchase orders, and receipts through the shared ledger, where purchase prices are recorded for traceability only and do not change the provisional costing valuation. Shared sales and customer management is implemented: customers, sales orders, and shipments through the shared ledger, with mixed-unit shipment valuation, an explicit audited reopen path when a reversal leaves quantity outstanding, and sales prices recorded for traceability only without creating accounting entries or changing costing valuation. Supplier invoices, customer invoices, payments, and accounting postings remain part of the later accounting phase. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
+The ERP uses one shared catalog, inventory ledger, warehouse/location system, and future purchasing, supplier, customer, sales, and accounting capabilities across both lines. BOMs and routings are configurable by product and line; inventory and accounting systems are not duplicated per line. WIP inventory transfers remain out of scope until factory policy is confirmed. Monthly product costing uses per-material Last Purchase Cost (LPC), effective at the successful system posting time of a genuine purchase receipt. Material issues snapshot their price and source at issue posting time; a dated owner-entered price is a clearly labeled fallback when no LPC applies. FIFO and Moving Weighted Average are not used. Measured material-waste records link damaged base quantities to production-result events and snapshot LPC or a valid dated fallback at server posting time; unreviewed evidence and unvalued waste keep costing periods incomplete. Shared purchasing and supplier management is implemented: suppliers, purchase orders, and receipts through the shared ledger, where prices update per-material LPC at successful posting time after a genuine receipt is validated. Shared sales and customer management is implemented: customers, sales orders, and shipments through the shared ledger, with mixed-unit shipment valuation, an explicit audited reopen path when a reversal leaves quantity outstanding, and sales prices recorded for traceability only without creating accounting entries or changing costing valuation. Supplier invoices, customer invoices, payments, and accounting postings remain part of the later accounting phase. See [PROMPT_SPECS.md](PROMPT_SPECS.md) for phase boundaries and acceptance tests.
 
 ## Runtime baseline
 
@@ -43,7 +43,7 @@ python manage.py runserver
 
 Use separate settings for each environment:
 
-- **Development:** `DJANGO_DEBUG=true`; SQLite is suitable for quick local smoke tests. For PostgreSQL integration work, use `DB_ENGINE=postgres` with the local `paper_factory` database and `paper_factory_app` role after confirming/creating them in pgAdmin. Do not put a real password in `.env.example` or Git.
+- **Development:** `DJANGO_DEBUG=true`; SQLite is suitable for quick local smoke tests. PostgreSQL integration and test work must use `DB_ENGINE=postgres`, `DB_NAME=test_paper_factory`, `DB_TEST_NAME=test_paper_factory`, and the `paper_factory_app` role at `127.0.0.1:5432`. Verify Django's effective configuration and live target before any database operation. Never use the production `paper_factory` database for development or tests. Do not put a real password in `.env.example` or Git.
 - **Automated PostgreSQL tests:** use a dedicated disposable test database and test credentials. Django's test runner creates its test database; if it must create one, grant `CREATEDB` only to a dedicated test role, not the normal runtime role. Never point tests at production.
 - **Production:** `DJANGO_DEBUG=false`, persistent `DJANGO_SECRET_KEY`, production `DJANGO_ALLOWED_HOSTS`, and production `DB_*` values supplied by the deployment secret store/process environment. Django settings require every PostgreSQL connection value and reject SQLite in non-debug mode. Non-debug mode forces HTTPS redirects and secure session/CSRF cookies; HSTS remains unset until the HTTPS hostname and proxy topology are confirmed.
 
@@ -55,11 +55,18 @@ The checked-in dependency manifest pins Django, Psycopg, Django REST Framework, 
 
 The API is served under `/api/v1/` and uses DRF token authentication only. It is
 not a direct database interface: mobile clients must never connect to
-PostgreSQL. Customers and owner/staff users have separate explicit permissions,
-and customer records are isolated by the linked customer account.
+PostgreSQL. Customers, owners, and operational staff have separate API
+boundaries. Owners are active superusers or explicit members of the `ERP Owners`
+Django group; operational users must be active staff members of `ERP Operational
+Staff`. `is_staff=True` alone grants neither role. Customer records are isolated
+by the authenticated user's linked customer account. Before rollout, explicitly
+assign existing legitimate owners to `ERP Owners` (or confirm they are
+superusers); no existing user is promoted automatically and no user-table
+migration is needed.
 
 ```text
 POST /api/v1/auth/token/       obtain a token
+GET  /api/v1/auth/me/          server-derived effective role and permissions
 POST /api/v1/auth/logout/      revoke the current token
 GET  /api/v1/customer/...      customer profile, products, prices, orders
 POST /api/v1/customer/order-requests/
@@ -76,6 +83,20 @@ GET  /api/v1/owner/inventory/stock/    paginated current stock
 GET  /api/v1/owner/inventory/movements/ paginated stock movements
 GET  /api/v1/owner/production/orders/  paginated production orders
 GET  /api/v1/owner/costing/periods/    paginated costing periods
+GET  /api/v1/employee/production/orders/  active operational orders
+GET  /api/v1/employee/production/orders/{id}/  operations and material requirements
+POST /api/v1/employee/production/progress/  record operation progress
+POST /api/v1/employee/production/operations/complete/  complete or skip an eligible optional operation
+POST /api/v1/employee/production/results/  record good/scrap output
+POST /api/v1/employee/production/results/{id}/reverse/  audited result correction
+POST /api/v1/employee/production/results/{id}/waste/  record measured material waste
+POST /api/v1/employee/production/results/{id}/waste-review/  confirm reviewed zero waste
+POST /api/v1/employee/production/waste/{id}/reverse/  audited waste correction
+GET  /api/v1/employee/materials/  material stock and active locations
+POST /api/v1/employee/material-issues/  issue required material to an order
+POST /api/v1/employee/counters/  start counter interval
+POST /api/v1/employee/counters/{id}/{close|approve|correct}/  counter lifecycle
+POST /api/v1/employee/finished-receipts/  receive production into shared stock
 GET  /api/v1/schema/           staff-only OpenAPI schema
 GET  /api/v1/docs/             staff-only interactive documentation
 ```
@@ -90,6 +111,36 @@ modules are not implemented. The separate monthly management result and loss
 carry-forward are persisted and clearly labelled as non-accounting; see
 [API.md](API.md) for endpoint details, permissions, response semantics, and
 limitations.
+
+Employee operations are thin adapters over the manufacturing and counter
+services; they do not create stock-ledger rows directly. Request bodies reject
+undeclared actor, role, timestamp, and cost fields. Each write still requires
+its existing Django model permission. Operational responses omit cost and
+profit information. Assign the two groups and each action permission explicitly
+in Django admin.
+
+## Flutter Android client
+
+A Flutter Android client is implemented in [`mobile/`](mobile/README.md). It
+authenticates with the real API, discovers the effective role from
+`/api/v1/auth/me/`, and routes to owner, operational employee, or customer
+screens. Tokens are stored through `flutter_secure_storage` and never in
+`shared_preferences`; language and API base URL remain non-secret preferences.
+The default development URL is `http://10.0.2.2:8000/api/v1/`, configurable in
+the app and validated before saving. Cleartext HTTP is enabled only in the debug
+Android manifest; release builds use the platform default HTTPS-only policy.
+Android backups are disabled for the app.
+
+Owner screens read persisted dashboard, costing, inventory, sales, purchasing,
+production, and monthly-profit data. Employee screens use the employee API for
+production orders, measured waste, issues, finished receipts, and counter
+lifecycle actions. Customer screens use only the customer catalog, price, and
+draft-order-request endpoints. Forms select real server-provided IDs; no unit,
+product, order, requirement, counter, or location ID is hardcoded. The client
+does not contain mock business data or offline success paths.
+
+Flutter commands, roles, security notes, and the verified APK location are in
+[`mobile/README.md`](mobile/README.md).
 
 Staff-only web reports are served under `/reports/` for the consolidated overview,
 sales, purchasing, inventory, production, costing, and monthly profit. They use the same
@@ -113,3 +164,5 @@ After changing models, create migrations with `python manage.py makemigrations`,
 - [TODO.md](TODO.md): ordered next work.
 - [PROMPT_SPECS.md](PROMPT_SPECS.md): phase contracts, implemented scope notes, and acceptance tests.
 - [API.md](API.md): mobile API endpoints, authentication, permissions, dashboard semantics, and limitations.
+
+Production posting now separates operator-entered production time from server posting time for financial attribution. Staff can record immutable measured raw-material waste against a production result, with an LPC or valid dated-fallback snapshot at event time, and explicitly review a result as having no material damage. Monthly costing and profit finalization remain incomplete when required waste evidence or valuation is missing. Production results use audited full reversal and new corrected postings; material reversals retain event-price snapshots. PostgreSQL verification against `test_paper_factory` is complete; see `IMPLEMENTATION_STATUS.md` for the verified test counts and migration status.

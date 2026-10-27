@@ -26,6 +26,12 @@ from .views import (
     OwnerStockMovementListView,
     TokenLogoutView,
     TokenObtainView,
+    CurrentUserView,
+)
+from .employee_api import (
+    CompleteOperationView, CounterActionView, CounterStartView, EmployeeOrderDetailView, EmployeeOrderListView,
+    FinishedReceiptView, MaterialDataView, MaterialIssueView, ProgressView, ResultReverseView,
+    ResultView, WasteReviewView, WasteReverseView, WasteView,
 )
 
 app_name = "api"
@@ -38,6 +44,21 @@ DOCS_AUTHENTICATION_CLASSES = [SessionAuthentication, TokenAuthentication]
 urlpatterns = [
     path("auth/token/", TokenObtainView.as_view(), name="token"),
     path("auth/logout/", TokenLogoutView.as_view(), name="logout"),
+    path("auth/me/", CurrentUserView.as_view(), name="me"),
+    path("employee/production/orders/", EmployeeOrderListView.as_view(), name="employee-production-orders"),
+    path("employee/production/orders/<int:pk>/", EmployeeOrderDetailView.as_view(), name="employee-production-order-detail"),
+    path("employee/production/progress/", ProgressView.as_view(), name="employee-production-progress"),
+    path("employee/production/operations/complete/", CompleteOperationView.as_view(), name="employee-production-operation-complete"),
+    path("employee/production/results/", ResultView.as_view(), name="employee-production-results"),
+    path("employee/production/results/<int:pk>/reverse/", ResultReverseView.as_view(), name="employee-production-result-reverse"),
+    path("employee/production/results/<int:result_id>/waste/", WasteView.as_view(), name="employee-production-waste"),
+    path("employee/production/results/<int:result_id>/waste-review/", WasteReviewView.as_view(), name="employee-production-waste-review"),
+    path("employee/production/waste/<int:pk>/reverse/", WasteReverseView.as_view(), name="employee-production-waste-reverse"),
+    path("employee/materials/", MaterialDataView.as_view(), name="employee-materials"),
+    path("employee/material-issues/", MaterialIssueView.as_view(), name="employee-material-issues"),
+    path("employee/counters/", CounterStartView.as_view(), name="employee-counter-start"),
+    path("employee/counters/<int:pk>/<str:action>/", CounterActionView.as_view(), name="employee-counter-action"),
+    path("employee/finished-receipts/", FinishedReceiptView.as_view(), name="employee-finished-receipts"),
     path("customer/profile/", CustomerProfileView.as_view(), name="customer-profile"),
     path("customer/products/", CustomerProductListView.as_view(), name="customer-products"),
     path("customer/products/<int:pk>/", CustomerProductDetailView.as_view(), name="customer-product-detail"),

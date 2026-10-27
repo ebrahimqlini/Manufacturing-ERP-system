@@ -61,9 +61,18 @@ class RollYieldStandardForm(ArabicFormMixin, forms.ModelForm):
             "expected_cartons_per_roll",
             "roll_unit",
             "carton_unit",
+            "supplier_name",
+            "specification_reference",
+            "revision",
+            "effective_date",
+            "target_yield_percent",
+            "max_scrap_percent",
             "active",
             "notes",
         )
+        widgets = {
+            "effective_date": forms.DateInput(attrs={"type": "date"}),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

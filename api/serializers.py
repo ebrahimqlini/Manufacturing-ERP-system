@@ -35,6 +35,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
 
 class CustomerUnitSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
     code = serializers.CharField()
     name_ar = serializers.CharField()
     name_en = serializers.CharField(allow_blank=True)
@@ -74,6 +75,7 @@ class CustomerProductSerializer(serializers.ModelSerializer):
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_base_uom(self, obj):
         return {
+            "id": obj.base_uom_id,
             "code": obj.base_uom.code,
             "name_ar": obj.base_uom.name_ar,
             "name_en": obj.base_uom.name_en,
@@ -82,6 +84,7 @@ class CustomerProductSerializer(serializers.ModelSerializer):
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_units(self, obj):
         units = [{
+            "id": obj.base_uom_id,
             "code": obj.base_uom.code,
             "name_ar": obj.base_uom.name_ar,
             "name_en": obj.base_uom.name_en,
@@ -92,6 +95,7 @@ class CustomerProductSerializer(serializers.ModelSerializer):
             if not conversion.active or not conversion.unit.active:
                 continue
             units.append({
+                "id": conversion.unit_id,
                 "code": conversion.unit.code,
                 "name_ar": conversion.unit.name_ar,
                 "name_en": conversion.unit.name_en,
@@ -109,6 +113,7 @@ class CustomerProductSerializer(serializers.ModelSerializer):
         return {
             "amount": format_decimal(price.selling_price, 4),
             "unit": {
+                "id": price.unit_id,
                 "code": price.unit.code,
                 "name_ar": price.unit.name_ar,
                 "name_en": price.unit.name_en,
@@ -323,6 +328,25 @@ class TokenResponseSerializer(serializers.Serializer):
     """Actual DRF token response: a single opaque token string."""
 
     token = serializers.CharField()
+
+
+class CurrentUserSerializer(serializers.Serializer):
+    """Authenticated user profile, active roles, and permissions."""
+
+    username = serializers.CharField()
+    first_name = serializers.CharField()
+    last_name = serializers.CharField()
+    email = serializers.EmailField()
+    is_superuser = serializers.BooleanField()
+    is_staff = serializers.BooleanField()
+    is_owner = serializers.BooleanField()
+    is_employee = serializers.BooleanField()
+    is_customer = serializers.BooleanField()
+    role = serializers.CharField()
+    customer_id = serializers.IntegerField(allow_null=True)
+    customer_code = serializers.CharField(allow_null=True)
+    customer_name_ar = serializers.CharField(allow_null=True)
+    permissions = serializers.ListField(child=serializers.CharField())
 
 
 class DashboardQuerySerializer(serializers.Serializer):

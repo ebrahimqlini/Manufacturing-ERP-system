@@ -8,7 +8,7 @@
 {% include "reports/_tabs.html" %}
 
 <div class="alert alert-warning small">
-  التكلفة المعروضة تشغيلية ومؤقتة إلى أن يعتمد المالك/المحاسب طريقة التقييم. لا توجد أرباح محاسبية. المبالغ الاحتياطية/التوزيع بالتساوي تُشار إليها بحالة <span class="ltr">INCOMPLETE</span> ولا يُخترع لها مبلغ كمي منفصل غير محفوظ.
+  التقييم المادي يستخدم LPC المسجل عند الترحيل الناجح أو السعر القياسي المؤرخ الاحتياطي المعلن. تقدير تكلفة الهالك موزع على مستوى أمر الإنتاج فقط؛ لا يحدد مادة تالفة أو LPC وقت الحدث، وتبقى الفترات المتأثرة <span class="ltr">INCOMPLETE</span>. لا توجد أرباح محاسبية.
 </div>
 
 <div class="row g-3 mb-4">
@@ -21,7 +21,7 @@
 <div class="card card-body shadow-sm mb-4">
   <h2 class="h5">فترات التكاليف</h2>
   <div class="table-responsive"><table class="table table-sm mb-0">
-    <thead><tr><th>الفترة</th><th>الحالة</th><th>اكتمال البيانات</th><th>المواد الفعلية</th><th>محمّل على الجيد</th><th>هالك منفصل</th><th>إجمالي التكلفة</th><th>الفحص الحسابي</th><th>تفاصيل</th></tr></thead>
+    <thead><tr><th>الفترة</th><th>الحالة</th><th>اكتمال البيانات</th><th>المواد الفعلية</th><th>محمّل على الجيد</th><th>تقدير هالك موزع</th><th>إجمالي التكلفة</th><th>الفحص الحسابي</th><th>تفاصيل</th></tr></thead>
     <tbody>{% for row in costing.periods %}
       <tr>
         <td class="ltr">{{ row.year }}/{{ row.month|stringformat:"02d" }}</td>
@@ -43,7 +43,7 @@
 <div class="card card-body shadow-sm mb-4">
   <h2 class="h5">تفصيل الفترة الأحدث</h2>
   <div class="table-responsive"><table class="table table-sm mb-0">
-    <thead><tr><th>المنتج</th><th>الخط</th><th>جيد</th><th>هالك</th><th>مواد فعلية</th><th>محمّل على الجيد</th><th>هالك منفصل</th><th>عمالة</th><th>كهرباء</th><th>مياه</th><th>أخرى</th><th>الإجمالي</th><th>تكلفة الوحدة</th><th>الحالة</th></tr></thead>
+    <thead><tr><th>المنتج</th><th>الخط</th><th>جيد</th><th>هالك</th><th>مواد فعلية</th><th>محمّل على الجيد</th><th>تقدير هالك موزع</th><th>عمالة</th><th>كهرباء</th><th>مياه</th><th>أخرى</th><th>الإجمالي</th><th>تكلفة الوحدة</th><th>الحالة</th></tr></thead>
     <tbody>{% for entry in costing.latest_period_entries %}
       <tr><td>{{ entry.product_sku }} — {{ entry.product_name_ar }}</td><td>{{ entry.production_line|default:"—" }}</td><td class="ltr">{{ entry.good_units_produced }} {{ entry.base_uom }}</td><td class="ltr">{{ entry.scrap_units_produced }} {{ entry.base_uom }}</td><td class="ltr">{{ entry.actual_material_cost }}</td><td class="ltr">{{ entry.material_cost_assigned_to_good }}</td><td class="ltr">{{ entry.waste_material_cost }}</td><td class="ltr">{{ entry.allocated_labor_cost }}</td><td class="ltr">{{ entry.allocated_electricity_cost }}</td><td class="ltr">{{ entry.allocated_water_cost }}</td><td class="ltr">{{ entry.allocated_other_cost }}</td><td class="ltr">{{ entry.total_production_cost }}</td><td class="ltr">{{ entry.cost_per_good_unit|default:"—" }}</td><td>{% if entry.calculation_status == 'COMPLETE' %}<span class="badge bg-success">مكتمل</span>{% else %}<span class="badge bg-warning text-dark">مراجعة</span>{% endif %}</td></tr>
     {% empty %}<tr><td colspan="14" class="text-muted">لا توجد بنود تكلفة محفوظة.</td></tr>{% endfor %}</tbody>

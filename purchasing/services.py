@@ -8,7 +8,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from inventory.models import StockMovement
-from inventory.services import post_movement, to_base_quantity
+from inventory.services import post_movement, record_purchase_receipt_cost, to_base_quantity
 
 from .models import (
     CENT,
@@ -186,6 +186,11 @@ def create_receipt(*, order, actor, reference, received_date, destination_locati
             if not order_line.material.active:
                 raise ValidationError({"material": f"المادة {order_line.material.sku} غير نشطة؛ لا يمكن استلامها."})
             quantity_base = to_base_quantity(order_line.material, quantity, unit)
+            if order_line.price_per_base_unit is None or order_line.price_per_base_unit <= 0:
+                raise ValidationError(
+                    {"price": f"سعر الاستلام لمادة {order_line.material.sku} يجب أن يكون أكبر من صفر؛ "
+                    "قيمة إجمالية الشراء مطلوبة لكل استلام ناجح."}
+                )
             already_received = received_map.get(order_line.pk, Decimal("0"))
             if already_received + quantity_base > order_line.quantity_base:
                 outstanding = order_line.quantity_base - already_received
@@ -243,4 +248,5 @@ def create_receipt(*, order, actor, reference, received_date, destination_locati
                 sequence=index,
             )
             receipt_line.save()
+            record_purchase_receipt_cost(receipt_line=receipt_line, actor=actor)
         return receipt

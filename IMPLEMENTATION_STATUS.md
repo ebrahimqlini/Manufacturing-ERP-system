@@ -167,10 +167,10 @@ Implemented in this checkout:
 
 ### API limitations and future dependencies
 
-- No Flutter applications, push notifications, WebSockets, or live-update transport.
+- A Flutter Android client is implemented later in Prompt 13B. Push notifications, WebSockets, and live-update transport remain unimplemented.
 - No customer registration/password-reset, customer order cancellation, customer price-list administration, or order-request idempotency key.
 - No authoritative accounting: invoices, supplier/customer credit notes, payments, tax, receivables, payables, cash, accounting periods, and postings remain unavailable.
-- No inventory valuation, lot/serial tracking, stock reservation, or historical as-of-date stock balance. Low-stock thresholds are per product across all locations, not per warehouse/location reorder points.
+- No accounting inventory valuation, FIFO, or moving weighted average; per-material LPC snapshots are used only by production costing. No lot/serial tracking, stock reservation, or historical as-of-date stock balance. Low-stock thresholds are per product across all locations, not per warehouse/location reorder points.
 - No production-line attribution on sales, purchasing, or shared inventory ledger records. Production reports can be filtered by line; shared records are never duplicated or artificially allocated to produce a line breakdown.
 - No CORS policy; native mobile clients do not need one. A Flutter web client would require an explicit policy.
 - Product prices exposed to customers are owner reference prices and their own order snapshots, not quotations; no cost or margin is exposed.
@@ -189,7 +189,7 @@ Implemented in this checkout:
 - Costing reporting reads persisted `CostingPeriod`, `ProductCostingEntry`, and `ProductionOrderCostingEntry` records without recalculating product cost, allocation drivers, or expenses. It exposes period/product/order components, completeness, review flags, missing-data notes, and display-level reconciliation. Added persisted `electricity_recorded` and `water_recorded` snapshots plus migration `costing.0007_costingperiod_electricity_water_recorded`; a missing utility record differs from an explicitly recorded `0.00`.
 - Reports return customer/supplier contact-master summaries, recent documents/activity, and `data_quality` warnings for low/negative stock, customer price review, unpriced legacy orders, missing utilities, incomplete/fallback costing, draft orders, open production, and missing production results. Informational warnings state that accounting and historical stock are unavailable.
 - Commercial sales/purchase values remain explicitly non-accounting. No revenue, profit, receivables, payables, cash, WIP balance, allocation driver, or historical stock figure is invented. Report responses are request-time fresh with no caching, WebSockets, or push notifications.
-- Updated `API.md`, `DECISIONS.md`, `README.md`, `TODO.md`, and this status document for the verified behavior. No Flutter work or Prompt 8 controls were started.
+- Updated `API.md`, `DECISIONS.md`, `README.md`, `TODO.md`, and this status document for the verified behavior. That phase did not start Flutter or Prompt 8 work; the Flutter client was delivered later (see Prompt 13B).
 
 ### Reporting verification
 
@@ -322,6 +322,110 @@ Known limitations and accepted risks (not fixed, by design or deferred policy de
 - The web form token protects staff double-submission; the public API is read-only for
   mutations of financial data, so no API idempotency key was added.
 
+## Prompt 11 — manual machine counters, material scrap costing, monthly profit integration (implemented)
+
+Workers read the physical machine counter (no connectivity or polling); recorded readings are
+measurements only and never post stock movements or change the authoritative production
+record. Added:
+
+- `MachineCounterReading` (manufacturing) with PROVISIONAL → COMPLETE → APPROVED lifecycle
+  (CORRECTED after an audited change, re-approvable), non-negative / end≥start /
+  rejected≤output check constraints, continuation + reset-reason documentation for a counter
+  that restarts backwards, one open interval per line/order with time-overlap rejection, exact
+  unit conversion to base units (rejecting non-representable results), and mandatory-reason
+  corrections archived in a `corrections` JSON audit list. Direct `save()`/`delete()` on
+  recorded readings is blocked; services enforce the new `record_counter_reading`,
+  `approve_counter_reading`, and `correct_counter_reading` permissions plus staff status.
+- `ProductionLine.counter_behavior` (UNCONFIRMED default / COUNTS_ALL_OUTPUT /
+  COUNTS_GOOD_ONLY): an unconfirmed counter is shown as a provisional physical measurement,
+  never as verified good output. `MaterialIssue.roll_reference` is a document-only roll
+  reference captured at issue creation.
+- `costing/yield_services.py`: threshold classification (WITHIN/ABOVE/NO_THRESHOLD/
+  NO_STANDARD/PENDING_APPROVAL/INSUFFICIENT_DATA) is operational only; scrap % is measured
+  recorded scrap ÷ total measured output — never derived from yield shortfall. Issued-minus-
+  expected material is labeled UNRECONCILED_MATERIAL and deliberately left unclassified —
+  the data model cannot separate usable roll remnants from material consumed by recorded
+  damaged units — so it is never treated as scrap, never valued, never deducted, and no
+  sale/recycling rule is assumed. Valuation reuses `get_price_record_info`; the persisted
+  `waste_material_cost` now comes from immutable material-specific waste records and their
+  event-time cost snapshots. Missing review or valuation keeps affected periods incomplete;
+  order-level output scrap remains an operational measure and is not used to infer raw-material
+  damage.
+- `RollYieldStandard` specification metadata (supplier text, specification reference,
+  revision, effective date, target yield %, max scrap %, updated_by) with range constraints;
+  `ProductCostingEntry` snapshots the exact standard used (FK, revision, thresholds) at
+  calculation time so later spec edits never rewrite historical classifications.
+- Monthly profit integration: `MonthlyProfitPeriod` gained `separated_scrap_loss`,
+  `absorbed_scrap_cost` (display-only), `unreconciled_scrap_cost`, and `scrap_treatment`.
+  New formula: `monthly_result = gross_profit − operating_total − separated_scrap_loss`.
+  The separated scrap is deducted exactly once only when the period waste policy is
+  SEPARATE_ABNORMAL, the costing period is FINALIZED and complete, the order-level entry is
+  COMPLETE, and the order is COMPLETED (the `_costing_is_authoritative` gate); every other
+  separated amount is reported as unreconciled — never deducted, never fabricated. Under the
+  default ABSORBED_NORMAL policy nothing is deducted (the scrap already rides inside unit
+  cost → COGS), and `absorbed_scrap_cost` shows a hypothetical split for visibility only.
+  Water/labor/electricity/maintenance/other expense treatment, `is_complete`, and
+  finalization protections are unchanged.
+- Arabic RTL staff UI: counter start/close/approve/correct views + order detail section,
+  line `counter_behavior` in the line form/admin, yield standard metadata fields, monthly
+  yield/scrap report page (`costing:yield-report`), profit period scrap section, and report
+  columns. Owner API extended without a new endpoint: `_profit_period_row`/`profit_report`
+  now flow scrap figures, treatment labels, formula, and basis notes through `profit_payload`.
+
+### Prompt 11 verification
+
+- Business-rule review (only confirmed, actually damaged/unusable material is production
+  waste): issued-minus-expected material is labeled UNRECONCILED_MATERIAL and deliberately
+  left unclassified — the report note states both possible compositions (usable roll
+  remnants or material consumed by recorded damaged units) and attaches no valuation,
+  deduction, or sale/recycling rule; the scrap-vs-shortfall test now uses numerically
+  distinct values (measured scrap 10.00% vs shortfall 18.18%) so a shortfall-derived
+  implementation would fail; and a zero-damage test drives the order to COMPLETED and the
+  period to FINALIZED through the approved services (`record_operation_progress` →
+  `complete_operation` → `receive_finished_goods` → `complete_order` →
+  `finalize_costing_period`) with every deduction gate open, then proves the deduction
+  stays 0.00 while a 12 kg unexplained material difference exists.
+- Focused suite `manufacturing.tests_counter costing.tests_yield_scrap
+  costing.tests_scrap_profit --keepdb`: 67 tests, zero failures, exit code 0. Module suites
+  `manufacturing costing reports --keepdb`: 191 tests, zero failures, exit code 0. Full
+  PostgreSQL suite `manage.py test --keepdb`: 352 tests, zero failures, zero skips, exit
+  code 0. Exit codes were captured from file-redirected runs printing `$LASTEXITCODE`; a
+  PowerShell 5.1 wrapper quirk reports "Exited with code 1" for commands ending on a
+  `2>&1 |` pipeline even though the Python process exits 0.
+  Verified target before every DB command: `DB_NAME=test_paper_factory`,
+  `DB_USER=paper_factory_app`, `127.0.0.1:5432`; production database `paper_factory` was
+  never connected to or modified.
+  Migrations `manufacturing.0009` and `costing.0011` are applied only to the test database.
+- `manage.py check`, `makemigrations --check`, `spectacular --validate --fail-on-warn`,
+  and `git diff --check` all passed with exit code 0.
+
+Known limitations and accepted decisions (flagged for owner review):
+
+- The deduction gate treats a draft costing period's separated scrap as unreconciled (visible
+  but not deducted) until the costing period is finalized — the same authority gate COGS
+  relies on; recalculation picks it up automatically afterwards.
+- Threshold classification is operational only; financial treatment always follows the period
+  waste policy, and the two can legitimately disagree (e.g. an above-threshold but absorbed
+  scrap).
+- Supplier on a yield standard is a free-text field (no purchasing FK by design); residual
+  rolls are not inventory-tracked, so issued-minus-expected material stays
+  UNRECONCILED_MATERIAL — reported as an unexplained difference, never classified.
+- The issued-minus-expected reconciliation is measured against recorded good output only, so
+  a positive difference can mix usable roll remnants with material consumed by recorded
+  damaged units; the data model cannot separate them, so no classification is invented and
+  nothing is valued or deducted from it.
+- Prompt 12 supersedes the earlier Prompt 11 assumption that an issue-cost split could serve
+  as waste valuation. No cost is allocated from output proportions; missing measured material
+  evidence keeps the affected costing periods incomplete.
+- Sale or recycling of usable leftover material: no classification, inventory, valuation, or
+  accounting rule implemented — these rules are not yet specified.
+- Counter starts lock the shared line row before overlap checks; a PostgreSQL concurrency
+  regression test covers starts on different orders sharing a line.
+- Monthly-profit completeness now includes unresolved separated scrap and missing material-waste evidence; finalization rejects incomplete periods after recalculation.
+- Pre-Prompt-11 finalized profit periods keep their default scrap fields (zero/NONE) because
+  they were computed before separate scrap recognition existed; their waste was absorbed
+  under the default policy.
+
 ## Remaining decisions and deployment work
 
 - Confirm the factory's negative-stock policy, lot/serial requirements, and any additional authorization matrix before extending behavior.
@@ -332,3 +436,102 @@ Known limitations and accepted risks (not fixed, by design or deferred policy de
 - Use a current supported Python 3.12 patch for deployment and rerun checks.
 
 The revised phase order remains: Prompt 0 foundation (closed) → Prompt 1 shared catalog/inventory (implemented) → Prompt 2 configurable manufacturing for both lines → shared accounting → purchasing (implemented) → sales (implemented) → Prompt 6 secure mobile API and owner dashboard data (implemented) → Prompt 7 consolidated and line-level reporting (implemented) → Prompt 8 monthly profit, operating expenses, and loss carry-forward (implemented). Cross-cutting deployment controls remain future work. See [PROMPT_SPECS.md](PROMPT_SPECS.md).
+
+## Prompt 12 — LPC provenance, measured waste valuation, and posting-time history
+
+- Purchase receipts now update LPC only after the purchasing service has persisted a real
+  `PurchaseReceiptLine` and its matching stock movement. The service checks the order, line,
+  material, source identity, quantity, base quantity, unit, reference, positive price, and
+  reversal state. Caller-provided source labels alone cannot establish receipt provenance.
+- LPC history uses the movement's successful system `posted_at`; entered receipt dates cannot
+  move prices backward. Historical issue lookups use this append-only history, and reversal
+  events restore the latest still-valid receipt at reversal time or record no applicable price
+  as `NULL` (never zero). Issue snapshots remain immutable and use a labeled dated-price fallback
+  only when no LPC applies.
+- `ProductionResult.posted_at` is authoritative for costing-period attribution; entered
+  `occurred_at` stays operational. Legacy rows with null posting time are not backfilled and
+  surface as incomplete. Measured material waste is linked to result/order/material and stores
+  the event-time LPC or valid dated fallback snapshot. Explicit review records distinguish zero
+  from missing evidence. No quantity is inferred from output rejection, counters, yield, or
+  unexplained stock differences.
+- Production-result corrections are full audited reversals; the original remains immutable and
+  corrected output is entered as a new result. Reversed results are excluded from active output
+  and costing reports. Existing finished-goods receipts must be reversed first when they exceed
+  the remaining active output.
+- At the time of this checkpoint, the new migration files were pending and the PostgreSQL driver
+  had not loaded. The final remediation and successful verification are recorded below.
+
+### Prompt 12 verification (2026-10-24)
+
+- Focused PostgreSQL suite `costing.tests_last_purchase_cost
+  costing.tests_yield_scrap costing.tests_scrap_profit manufacturing.tests_counter --keepdb`:
+  100 tests passed, zero failures, exit code 0. A focused cross-month regression was rerun
+  after its fixture correction and passed (1 test).
+- Relevant app suite `inventory purchasing manufacturing costing reports api --keepdb` first
+  ran 306 tests and exposed one legacy assertion expecting an affected scrap period to remain
+  complete. The assertion was updated to require the estimate limitation note and incomplete
+  status; its targeted regression passed. The final full-suite run below then passed all tests.
+- Final PostgreSQL suite `manage.py test --keepdb`: 385 tests passed, zero failures, zero
+  skips, exit code 0. The existing `test_paper_factory` database was preserved.
+- `manage.py check`: exit code 0. `manage.py makemigrations --check --dry-run`: exit code 0,
+  no changes detected. `manage.py spectacular --validate --fail-on-warn`: exit code 0.
+  Python `py_compile` for all touched Python and migration files: exit code 0.
+  `git diff --check`: exit code 0 (Git emitted only LF-to-CRLF advisories).
+- Before every database-dependent command, effective settings and the live PostgreSQL
+  connection were verified as database `test_paper_factory`, user `paper_factory_app`,
+  host `127.0.0.1`, port `5432`. `paper_factory` was never connected to or modified.
+- `showmigrations --plan` on that verified database showed all relevant migrations applied:
+  `inventory.0006`, `inventory.0007`, `manufacturing.0009`, `manufacturing.0010`,
+  `manufacturing.0011`, and `costing.0011` through `costing.0014`.
+
+## Final backend remediation (2026-10-24)
+
+- Added immutable `ProductionMaterialWaste` records tied to production result/order/material, with optional existing issue reference, measured base quantity, responsible actor, system posting time, and LPC or valid dated-fallback cost snapshots. Missing valuation stays null and makes costing incomplete. `ProductionWasteReview` is a separate immutable review event, so reviewed zero is distinct from missing review. Staff can record waste or explicitly confirm no material waste from the order result page; the costing report exposes the measured event values.
+- Replaced proportional scrap cost allocation in monthly costing with the measured event snapshot. Under the separate policy, measured waste is separated from good-unit material cost and remains subject to the period close; under absorbed policy it remains in production cost and is not deducted again. Missing review or valuation keeps costing incomplete. Waste reversals preserve the original price snapshot.
+- Monthly profit completeness now includes unresolved waste evidence and unreconciled separated scrap; the finalizer recalculates and rejects incomplete results with detail in its error. An active measured waste event counts as evidence; explicit zero review is only available when no active waste event exists.
+- Added an audited, immutable full reversal for a production result. The original remains present; a corrected result is entered as a new result. Costing, yield, order totals, and production reports omit reversed results. Reversal checks both applicable costing and profit-period locks.
+- Counter starts now lock the shared production-line row before overlap checks. A PostgreSQL-only concurrency regression test was added.
+- Migrations: `manufacturing.0012_productionmaterialwaste_and_review`, `manufacturing.0013_productionresultreversal`, `manufacturing.0014_productionresult_posted_at_server_default`, and `costing.0015_measured_scrap_cost_breakdown`. All four were applied by the PostgreSQL test runner to the verified test database. The post-test migration plan has no pending operations.
+- Production results are assigned to costing periods by `posted_at`, not operator-entered `occurred_at`. Legacy rows with null `posted_at` are not silently backfilled and are surfaced as incomplete when their entered date falls in a reviewed period.
+
+Verification results (2026-10-24):
+
+- Driver diagnosis: the earlier failure indicated that psycopg 3 had no usable libpq implementation and no psycopg2 fallback. In this run, the existing `.venv` already contained `psycopg==3.3.6` and `psycopg-binary==3.3.6`; importing `psycopg.pq` selected the binary implementation and reported libpq 18.4. No driver reinstall or system libpq change was needed. `requirements.txt` now keeps the reproducible `psycopg[binary]==3.3.6` declaration and removes a redundant direct pin of the same binary distribution. `pip check` passed.
+- Before database work, Django's effective settings and a live server query confirmed PostgreSQL database `test_paper_factory`, role `paper_factory_app`, address `127.0.0.1`, port `5432`; `TEST.NAME` was also `test_paper_factory`. No credential values were printed.
+- The migration plan before tests showed exactly the four migrations listed above. They contain only `CreateModel`, `AlterField`, and `AddConstraint` operations; there are no data migrations, raw SQL, deletes, or field removals. The test runner applied them. A later read-only migration plan showed no pending operations, and all four are recorded in `django_migrations`.
+- Focused PostgreSQL regression suites: 273 tests passed, zero failures, zero errors, zero skips. A subsequent single concurrency retest also passed.
+- Full PostgreSQL suite, `.venv\Scripts\python.exe manage.py test --keepdb`: 389 tests passed, zero failures, zero errors, zero skips. The existing test database was preserved.
+- `manage.py check`: passed. `manage.py makemigrations --check --dry-run`: passed, no changes detected. `manage.py spectacular --validate --fail-on-warn`: passed with zero warnings. Python `compileall`: passed. `pip check`: passed. `git diff --check`: passed (Git emitted only line-ending advisories).
+- Verification fixes: active measured waste now satisfies the evidence gate; reviewed zero cannot be recorded over an active measured event; reversed waste does not satisfy active evidence; regression fixtures distinguish output scrap from physically measured material waste and attribute backdated events by actual system posting time.
+- The live query and database-backed commands used only `test_paper_factory`; production database `paper_factory` was never connected to or modified. Original and final HEAD are unchanged at `a8c52beb9fa97411242ce932fa70c8be2101cae6`. Nothing was staged, committed, pushed, reset, stashed, or discarded.
+
+## Prompt 13A — API authorization and employee operational contract (2026-10-24)
+
+- Replaced the `is_staff` owner API boundary with explicit roles: owners are active superusers or active members of Django group `ERP Owners`; operational API users must be active staff members of `ERP Operational Staff`. Customer checks remain isolated to active non-staff users linked to an active customer. Unauthenticated access remains denied. A normal staff account with neither role is denied both internal API groups.
+- No user schema migration or automatic role promotion was added. Before rollout, an administrator must explicitly assign existing owners to `ERP Owners` (or confirm superuser status) and employees to `ERP Operational Staff`, with only the required model permissions. This preserves existing user rows and avoids granting every staff account owner access.
+- Added `/api/v1/employee/` routes for active production orders and their operations, material requirements, current output/counters/waste; operation progress and completion; production result posting and audited reversal; measured material waste, reviewed-zero evidence, and waste reversal; raw-material balances per active location; material issues; counter start/close/approve/correct; and finished-goods receipts. All write views require the employee group and call existing domain services, which continue enforcing model permissions, state/quantity rules, period locks, idempotency/references, concurrency and ledger invariants.
+- Employee input serializers reject undeclared fields. Actor identity comes from the token; timestamps and cost snapshots are server-derived. Employee responses do not expose cost or profit fields. No purchasing, sales, or financial writes were added.
+- PostgreSQL verification used only `.env` values after a live connection check confirmed `test_paper_factory`, `paper_factory_app`, `127.0.0.1:5432`; no production database connection was made. Full API app tests: 27 passed. Final role/employee adapter subset: 8 passed. Focused existing manufacturing/counter service regressions: 16 passed. Django `check`, migration consistency (`makemigrations --check --dry-run`), strict OpenAPI validation, Python compilation, and `git diff --check` passed. No migration changes were required.
+- This change updates the API contract only; it does not create mobile UI. Existing owner accounts need explicit group assignment before the role change is deployed.
+
+## Prompt 13B — Flutter Android MVP against the real API (2026-10-26)
+
+- Added the Flutter Android client in `mobile/`. It authenticates through `/api/v1/auth/token/`, discovers the effective role from `/api/v1/auth/me/`, and routes to owner, operational-employee, or customer screens. Failed profile discovery and API `401` responses clear the token instead of leaving a half-authenticated session.
+- Added a `TokenStore` abstraction. Production uses `flutter_secure_storage` 11.2.0 backed by the Android Keystore; tests inject `InMemoryTokenStore`. The token is not written to `shared_preferences`, and there is no plaintext fallback. Language and the configurable API base URL remain non-secret preferences.
+- API URL defaults and presets include `/api/v1`, and the client normalizes either `http://host:8000/api/v1/` or `http://host:8000/` without duplicating the version segment. The emulator default is `http://10.0.2.2:8000/api/v1/`. Release builds reject non-HTTPS URLs.
+- Android configuration: `allowBackup="false"` on the application, cleartext HTTP enabled only in `src/debug/AndroidManifest.xml`, and no cleartext override in the main/release manifest. The effective debug manifest has `minSdkVersion=24`, `targetSdkVersion=36`, `allowBackup=false`, and `usesCleartextTraffic=true`; the main manifest has no cleartext flag.
+- Owner screens read persisted dashboard, costing, inventory, sales, purchasing, production, and monthly-profit payloads, including the real `net_shipped_value`, `net_received_value`, `range_totals`, `financial_integrity`, and `low_stock_alerts` keys. Employee screens use real production orders, requirements, counters, materials, and locations for issues, measured waste, results, finished receipts, and counter lifecycle actions. Customer screens use real catalog products and units and submit draft order requests. No unit, product, order, requirement, counter, or location ID is hardcoded.
+- Added additive backend IDs required by the client: requirement `unit_id`, employee order `planned_unit_id`, material `base_unit_id`, and customer unit/product/reference-price `id` values. Focused API assertions verify these fields and the employee role boundary.
+- Localization was completed for the mobile screens in Arabic RTL and English LTR; no visible screen string remains hardcoded in Arabic except the language names themselves.
+- Windows build note: the pub cache and project can live on different drives, which makes Kotlin incremental caches fail with a different-roots error. `mobile/android/gradle.properties` disables Kotlin incremental compilation for reproducible local builds. NDK `28.2.13676358` and CMake `3.22.1` were installed into the local Android SDK to complete the debug build.
+
+### Prompt 13B verification
+
+- `flutter pub get`: exit code 0; `flutter_secure_storage` resolved to `11.2.0`.
+- `flutter analyze`: exit code 0, `No issues found!`.
+- `flutter test --reporter compact`: exit code 0, 23 tests passed.
+- `flutter build apk --debug`: exit code 0. APK: `mobile/build/app/outputs/flutter-apk/app-debug.apk` (188,189,960 bytes).
+- Focused PostgreSQL suite `costing.tests_last_purchase_cost costing.tests costing.tests_yield_scrap costing.tests_scrap_profit manufacturing.tests_counter manufacturing.tests purchasing.tests inventory.tests api.tests sales.tests reports.tests` with `--keepdb`: 326 tests passed, zero failures, exit code 0 (2026-10-27).
+- `manage.py test --keepdb`: 394 tests passed, zero failures, zero errors, zero skips (verified rerun on 2026-10-27 took 753.532 seconds); `test_paper_factory` was preserved. The test database was `test_paper_factory` with role `paper_factory_app` at `127.0.0.1:5432`; production `paper_factory` was not accessed.
+- `manage.py check`, `manage.py makemigrations --check --dry-run`, `manage.py spectacular --validate --fail-on-warn`, Python compilation, `pip check`, and `git diff --check` passed. No new migration was required for the additive serializer fields.
+- Remaining limits: the verified mobile build is Android debug only; iOS, Flutter web, and a signed release APK are not built. True per-material physical scrap attribution still depends on measured waste records and is not inferred from shortfall, counters, leftovers, or unexplained stock differences.

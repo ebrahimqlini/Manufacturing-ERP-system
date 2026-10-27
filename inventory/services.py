@@ -6,7 +6,14 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from catalog.models import Product, ProductUnitConversion
-from .models import InventoryLock, StockLedgerEntry, StockMovement, StorageLocation
+from .models import (
+    InventoryLock,
+    LastPurchaseCost,
+    LastPurchaseCostHistory,
+    StockLedgerEntry,
+    StockMovement,
+    StorageLocation,
+)
 from core.permissions import require_permission, require_staff
 
 SCALE = Decimal("0.000000000001")
@@ -48,6 +55,36 @@ def to_base_quantity(product, quantity, unit):
     return converted
 
 
+def get_last_purchase_cost_history_as_of(product, as_of_datetime):
+    """Latest append-only LPC change effective at or before ``as_of_datetime``.
+
+    ``None`` means no purchase-price event existed then; a row whose price is
+    ``None`` means the last valid purchase was reversed and no earlier valid
+    purchase remains. Both are "no applicable price", never zero.
+    """
+    return (
+        LastPurchaseCostHistory.objects.filter(
+            product=product, effective_at__lte=as_of_datetime
+        )
+        .select_related("source_movement")
+        .order_by("-effective_at", "-recorded_at", "-pk")
+        .first()
+    )
+
+
+def get_last_purchase_cost_as_of(product, as_of_datetime):
+    """Applicable last purchase cost per base unit at ``as_of_datetime``.
+
+    There is deliberately no fallback to a later receipt and no fallback to the
+    material's current last purchase cost: a historical event keeps the price
+    that was effective when it happened.
+    """
+    entry = get_last_purchase_cost_history_as_of(product, as_of_datetime)
+    if entry is None or entry.price_per_base_unit is None:
+        return None
+    return entry.price_per_base_unit
+
+
 def _lock_item_locations(product, locations):
     """Serialize all stock changes for each item/location pair on PostgreSQL."""
     unique_locations = {loc.pk: loc for loc in locations if loc is not None}
@@ -79,8 +116,14 @@ def _ensure_sufficient_stock(product, location, quantity):
 
 def post_movement(*, reference, movement_type, product, quantity, unit, actor,
                   source_location=None, destination_location=None, occurred_at=None,
-                  external_reference="", source_reference_type="", source_reference_id="", reason="", notes=""):
-    """Post one immutable, single-item event and its signed ledger legs atomically."""
+                  external_reference="", source_reference_type="", source_reference_id="", reason="", notes="",
+                  unit_cost_per_base_unit=None):
+    """Post one immutable, single-item event and its signed ledger legs atomically.
+
+    LPC is deliberately not updated here: the movement's source labels are
+    caller-controlled. The purchasing service records LPC only after it has
+    persisted and validated the matching PurchaseReceiptLine.
+    """
     require_permission(actor, "inventory.post_movement", "ترحيل حركة مخزون")
     require_staff(actor)
     if not reference or not reference.strip():
@@ -108,6 +151,11 @@ def post_movement(*, reference, movement_type, product, quantity, unit, actor,
         raise ValidationError({"destination_location": "يجب أن يختلف موقع المصدر عن الوجهة."})
     if (movement_type in (StockMovement.Type.ADJUSTMENT_IN, StockMovement.Type.ADJUSTMENT_OUT) and not reason.strip()):
         raise ValidationError({"reason": "سبب التسوية مطلوب."})
+
+    # Source-reference fields are caller-provided audit labels. They are not
+    # proof that a receipt belongs to purchasing; LPC is recorded only after a
+    # persisted PurchaseReceiptLine is validated by record_purchase_receipt_cost.
+
     locations = [loc for loc in (source_location, destination_location) if loc]
     for location in locations:
         if not location.active or not location.warehouse.active:
@@ -137,7 +185,79 @@ def post_movement(*, reference, movement_type, product, quantity, unit, actor,
             StockLedgerEntry.objects.create(movement=movement, product=product, location=source_location, quantity_base=-base_quantity)
         if destination_location:
             StockLedgerEntry.objects.create(movement=movement, product=product, location=destination_location, quantity_base=base_quantity)
+
     return movement
+
+
+def record_purchase_receipt_cost(*, receipt_line, actor):
+    """Record LPC only from a persisted, internally consistent purchase line."""
+    require_permission(actor, "purchasing.create_receipt", "تسجيل تكلفة استلام مشتريات")
+    require_staff(actor)
+    from purchasing.models import PurchaseReceiptLine
+
+    with transaction.atomic():
+        line = PurchaseReceiptLine.objects.select_for_update().select_related(
+            "receipt", "receipt__order", "order_line", "order_line__material", "movement"
+        ).get(pk=receipt_line.pk)
+        movement = line.movement
+        if not _is_genuine_purchase_receipt_line(line):
+            raise ValidationError("لا تطابق حركة المخزون استلام مشتريات موثقًا.")
+        if LastPurchaseCostHistory.objects.filter(source_movement=movement).exists():
+            raise ValidationError("سُجلت تكلفة حركة الاستلام من قبل.")
+        _update_last_purchase_cost(line.order_line.material, movement, line.price_per_base_unit, actor)
+
+
+def _is_genuine_purchase_receipt_line(line):
+    receipt = line.receipt
+    movement = line.movement
+    return all((
+        movement.movement_type == StockMovement.Type.RECEIPT,
+        movement.product_id == line.order_line.material_id,
+        movement.base_quantity == line.quantity_base,
+        movement.quantity == line.quantity,
+        movement.unit_id == line.unit_id,
+        movement.external_reference == receipt.reference,
+        movement.source_reference_type == "purchasing.purchase_receipt",
+        movement.source_reference_id == f"{receipt.pk.hex}:{line.order_line_id}",
+        receipt.order_id == line.order_line.order_id,
+        receipt.order.status == "CONFIRMED",
+        line.quantity_base > 0,
+        line.price_per_base_unit > 0,
+        not StockMovement.objects.filter(reversal_of=movement).exists(),
+    ))
+
+
+def _update_last_purchase_cost(product, movement, price_per_base_unit, actor):
+    """Update the product's current LPC (if the receipt is the latest) + history.
+
+    ``posted_at`` is the successful system posting time. A backdated document
+    date cannot make a price available earlier in historical costing.
+    """
+    lpc = LastPurchaseCost.objects.select_for_update().select_related("source_movement").filter(product=product).first()
+    is_newer_or_equal = (
+        lpc is None
+        or lpc.source_movement_id == movement.pk
+        or lpc.source_movement.posted_at <= movement.posted_at
+    )
+    if lpc is None:
+        LastPurchaseCost.objects.create(
+            product=product,
+            price_per_base_unit=price_per_base_unit,
+            source_movement=movement,
+            updated_by=actor,
+        )
+    elif is_newer_or_equal:
+        lpc.price_per_base_unit = price_per_base_unit
+        lpc.source_movement = movement
+        lpc.updated_by = actor
+        lpc.save(update_fields=["price_per_base_unit", "source_movement", "updated_by", "updated_at"])
+    LastPurchaseCostHistory.objects.create(
+        product=product,
+        price_per_base_unit=price_per_base_unit,
+        effective_at=movement.posted_at,
+        source_movement=movement,
+        change_reason=f"استلام: {movement.reference}",
+    )
 
 
 def _ensure_finalized_period_open_for_movement(movement):
@@ -212,6 +332,16 @@ def reverse_movement(*, movement, reference, actor, reason):
             reversal_delta = -entry.quantity_base
             if reversal_delta < 0:
                 _ensure_sufficient_stock(movement.product, entry.location, -reversal_delta)
+        # Validate provenance before the original movement acquires a reversal.
+        from purchasing.models import PurchaseReceiptLine
+        purchase_line = (
+            PurchaseReceiptLine.objects.select_related("receipt__order", "order_line", "movement")
+            .filter(movement=movement)
+            .first()
+        )
+        is_genuine_purchase = bool(
+            purchase_line and _is_genuine_purchase_receipt_line(purchase_line)
+        )
         try:
             reversed_movement = StockMovement.objects.create(
                 reference=reference.strip(), movement_type=StockMovement.Type.REVERSAL,
@@ -228,7 +358,100 @@ def reverse_movement(*, movement, reference, actor, reason):
                 movement=reversed_movement, product=movement.product, location=entry.location,
                 quantity_base=-entry.quantity_base,
             )
+
+        if movement.movement_type == StockMovement.Type.RECEIPT and is_genuine_purchase and LastPurchaseCostHistory.objects.filter(source_movement=movement).exists():
+            _restore_last_purchase_cost_on_reversal(movement, reversed_movement, actor)
+
     return reversed_movement
+
+
+def _restore_last_purchase_cost_on_reversal(reversed_movement, reversal_movement, actor):
+    """Restore the applicable LPC after a purchase receipt is reversed.
+
+    Only successfully posted, still-valid *purchase* receipts are eligible
+    evidence. The restored price is the latest eligible receipt effective at or
+    before the reversed receipt (never a later one). If none exists, the
+    current LPC is cleared and the history records an explicit null price at
+    the reversal event — never a fabricated 0.00 price.
+
+    The history entry's ``effective_at`` is the reversal event time, not the
+    original receipt time, so a historical lookup before the reversal still
+    sees the price that was valid then.
+    """
+    from purchasing.models import PurchaseReceiptLine
+
+    product = reversed_movement.product
+    reversal_at = reversal_movement.posted_at
+
+    # The active price after removing the reversed receipt is the latest still
+    # valid purchase receipt effective at the reversal moment. This is not
+    # always the receipt immediately before the reversed one: if a later valid
+    # receipt exists, reversing an older receipt must leave that later price
+    # active.
+    eligible_receipts = (
+        StockMovement.objects.filter(
+            product=product,
+            movement_type=StockMovement.Type.RECEIPT,
+            purchasing_receipt_line__price_per_base_unit__gt=0,
+            reversal__isnull=True,
+            posted_at__lte=reversal_at,
+        )
+        .exclude(pk=reversed_movement.pk)
+        .order_by("-posted_at", "-pk")
+    )
+    previous_receipt = None
+    previous_price = None
+    for candidate in eligible_receipts:
+        try:
+            candidate_line = candidate.purchasing_receipt_line
+        except PurchaseReceiptLine.DoesNotExist:
+            continue
+        if not _is_genuine_purchase_receipt_line(candidate_line):
+            continue
+        history_entry = LastPurchaseCostHistory.objects.filter(
+            product=product,
+            source_movement=candidate,
+            price_per_base_unit__isnull=False,
+        ).order_by("-effective_at", "-recorded_at", "-pk").first()
+        if history_entry is not None:
+            previous_receipt = candidate
+            previous_price = history_entry.price_per_base_unit
+            break
+
+    lpc = LastPurchaseCost.objects.select_for_update().select_related("source_movement").filter(product=product).first()
+    if previous_receipt is not None:
+        if lpc is None:
+            LastPurchaseCost.objects.create(
+                product=product,
+                price_per_base_unit=previous_price,
+                source_movement=previous_receipt,
+                updated_by=actor,
+            )
+        else:
+            lpc.price_per_base_unit = previous_price
+            lpc.source_movement = previous_receipt
+            lpc.updated_by = actor
+            lpc.save(update_fields=["price_per_base_unit", "source_movement", "updated_by", "updated_at"])
+        LastPurchaseCostHistory.objects.create(
+            product=product,
+            price_per_base_unit=previous_price,
+            effective_at=reversal_at,
+            source_movement=reversal_movement,
+            change_reason=f"عكس استلام: {reversed_movement.reference} → استعادة السعر السابق",
+        )
+        return
+
+    # No eligible earlier purchase price: clear the current value and record
+    # an explicit "no valid price" marker (null, never zero).
+    if lpc is not None:
+        lpc.delete()
+    LastPurchaseCostHistory.objects.create(
+        product=product,
+        price_per_base_unit=None,
+        effective_at=reversal_at,
+        source_movement=reversal_movement,
+        change_reason=f"عكس استلام: {reversed_movement.reference} → لا يوجد سعر شراء سابق صالح",
+    )
 
 
 def ledger_balances(*, product=None, product_ids=None, location=None, location_ids=None, warehouse=None):

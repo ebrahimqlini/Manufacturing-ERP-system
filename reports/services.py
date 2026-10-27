@@ -1637,7 +1637,7 @@ def production_report(
 
     # All results in the period (for output, consumption, yield calculations)
     all_results_in_period = ProductionResult.objects.filter(
-        occurred_at__date__range=(start, end), **result_filter
+        occurred_at__date__range=(start, end), correction__isnull=True, **result_filter
     ).select_related("order", "order__production_line", "order__product", "unit")
     output_rows = list(
         all_results_in_period.values(
@@ -1788,7 +1788,7 @@ def production_report(
     )
     orders_without_results = (
         orders_in_period.exclude(status=ProductionOrder.Status.CANCELLED)
-        .annotate(_has_result=Exists(ProductionResult.objects.filter(order=OuterRef("pk"))))
+        .annotate(_has_result=Exists(ProductionResult.objects.filter(order=OuterRef("pk"), correction__isnull=True)))
         .filter(_has_result=False)
         .count()
     )
@@ -2048,6 +2048,10 @@ def _costing_period_row(period):
         "stored_actual_material_cost": money(period.materials_total),
         "material_cost_assigned_to_good": money(assigned),
         "waste_material_cost": money(waste),
+        "waste_cost_basis": "ORDER_LEVEL_ALLOCATION_ESTIMATE",
+        "waste_cost_valuation_status": (
+            "UNAVAILABLE_MATERIAL_ATTRIBUTION" if waste > 0 else "NO_RECORDED_WASTE"
+        ),
         "allocated_labor_cost": money(allocated_labor),
         "allocated_electricity_cost": money(allocated_electricity),
         "allocated_water_cost": money(allocated_water),
@@ -2132,6 +2136,12 @@ def costing_report(start, end, recent_limit=5, dimension_limit=20):
                     entry.material_cost_assigned_to_good
                 ),
                 "waste_material_cost": money(entry.waste_material_cost),
+                "waste_cost_basis": "ORDER_LEVEL_ALLOCATION_ESTIMATE",
+                "waste_cost_valuation_status": (
+                    "UNAVAILABLE_MATERIAL_ATTRIBUTION"
+                    if entry.scrap_units_produced > 0
+                    else "NO_RECORDED_WASTE"
+                ),
                 "allocated_labor_cost": money(entry.allocated_labor_cost),
                 "allocated_electricity_cost": money(entry.allocated_electricity_cost),
                 "allocated_water_cost": money(entry.allocated_water_cost),
@@ -2173,6 +2183,12 @@ def costing_report(start, end, recent_limit=5, dimension_limit=20):
                     entry.material_cost_assigned_to_good
                 ),
                 "waste_material_cost": money(entry.waste_material_cost),
+                "waste_cost_basis": "ORDER_LEVEL_ALLOCATION_ESTIMATE",
+                "waste_cost_valuation_status": (
+                    "UNAVAILABLE_MATERIAL_ATTRIBUTION"
+                    if entry.scrap_units_produced > 0
+                    else "NO_RECORDED_WASTE"
+                ),
                 "total_production_cost": money(entry.total_production_cost),
                 "cost_per_good_unit": (
                     format(
@@ -2329,6 +2345,12 @@ def _profit_period_row(period):
         "maintenance_expense": money(period.maintenance_expense),
         "other_expense": money(period.other_expense),
         "operating_expenses_total": money(period.operating_expenses_total),
+        "separated_scrap_loss": money(period.separated_scrap_loss),
+        "absorbed_scrap_cost": money(period.absorbed_scrap_cost),
+        "unreconciled_scrap_cost": money(period.unreconciled_scrap_cost),
+        "scrap_treatment": period.scrap_treatment,
+        "scrap_treatment_label": period.get_scrap_treatment_display(),
+        "has_scrap_deduction": _decimal(period.separated_scrap_loss) > 0,
         "monthly_result": money(period.monthly_result),
         "opening_accumulated_loss": money(period.opening_accumulated_loss),
         "loss_recovered": money(period.loss_recovered),
@@ -2357,7 +2379,9 @@ def _profit_period_row(period):
         "expense_records": expense_records,
         "formula": (
             "gross_profit = revenue - cogs; monthly_result = gross_profit - "
-            "(labor + electricity + maintenance + other operating expenses); "
+            "(labor + electricity + maintenance + other operating expenses) - "
+            "separated_scrap_loss (deducted only under the separate-scrap policy "
+            "for completed, fully-costed orders); "
             "loss_recovered = min(max(monthly_result, 0), opening_accumulated_loss); "
             "closing_accumulated_loss = opening_accumulated_loss - loss_recovered + "
             "max(-monthly_result, 0)"
@@ -2408,6 +2432,15 @@ def profit_report(start, end, dimension_limit=25):
         "operating_expenses_total": money(
             sum(_decimal(period.operating_expenses_total) for period in periods)
         ),
+        "separated_scrap_loss": money(
+            sum(_decimal(period.separated_scrap_loss) for period in periods)
+        ),
+        "absorbed_scrap_cost": money(
+            sum(_decimal(period.absorbed_scrap_cost) for period in periods)
+        ),
+        "unreconciled_scrap_cost": money(
+            sum(_decimal(period.unreconciled_scrap_cost) for period in periods)
+        ),
         "monthly_result": money(sum(_decimal(period.monthly_result) for period in periods)),
         "loss_recovered": money(
             sum(_decimal(period.loss_recovered) for period in periods)
@@ -2456,7 +2489,8 @@ def profit_report(start, end, dimension_limit=25):
         "formula": {
             "gross_profit": "صافي إيراد المبيعات − تكلفة البضاعة المباعة",
             "monthly_result": (
-                "إجمالي الربح − العمالة − الكهرباء − الصيانة − المصاريف التشغيلية الأخرى"
+                "إجمالي الربح − العمالة − الكهرباء − الصيانة − المصاريف التشغيلية "
+                "الأخرى − خسارة الهالك المفصلة (تُخصم مرة واحدة فقط)"
             ),
             "loss_recovery": (
                 "الربح المتبقي بعد التغطية = نتيجة الشهر الموجبة − ما استُرد من رصيد "
@@ -2479,6 +2513,7 @@ def profit_report(start, end, dimension_limit=25):
             "Credit sales are recognized by active shipment, not by collection, because the project has no payment/collection ledger.",
             "No discounts, sales returns, or customer credit notes are implemented in the current data model; none are invented here. Cancelled orders and reversed shipment movements are excluded from active revenue and COGS.",
             "The monthly result is a management operating result before recovery of prior losses and is not accounting net profit, tax, or a distribution.",
+            "Scrap treatment: material cost of recorded scrap is separated from good-unit cost only under the period's SEPARATE_ABNORMAL policy; that separated amount is deducted exactly once as a loss line and only for completed, fully-costed orders. Scrap under the normal ABSORBED policy stays inside material cost per good unit and therefore inside COGS — it is never deducted again. Unfinished or uncomputed orders' separated scrap is reported as unreconciled and is never deducted or fabricated.",
         ],
         "accounting_final": False,
         "label_warning": (

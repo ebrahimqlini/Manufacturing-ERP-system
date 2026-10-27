@@ -1,9 +1,12 @@
 import uuid
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import F, Q
+from django.utils import timezone
 
 from catalog.models import Product, UnitOfMeasure
 from inventory.models import StockMovement, StorageLocation
@@ -130,6 +133,20 @@ ProductionMaterialRequirementManager = models.Manager.from_queryset(ProductionMa
 ProductionOrderOperationManager = models.Manager.from_queryset(ProductionOrderOperationQuerySet)
 
 
+class ImmutableProductionRecordQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("مستند التصنيع المرحّل غير قابل للتعديل؛ استخدم خدمة التصحيح المعتمدة.")
+
+    def delete(self):
+        raise ValidationError("مستند التصنيع المرحّل لا يُحذف؛ استخدم خدمة العكس المعتمدة.")
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError("التعديل الجماعي لمستند التصنيع المرحّل غير مسموح.")
+
+
+ImmutableProductionRecordManager = models.Manager.from_queryset(ImmutableProductionRecordQuerySet)
+
+
 def _locked_config_rows(model, ids):
     return list(model.objects.select_for_update(of=("self",)).filter(pk__in=sorted(set(ids))).order_by("pk"))
 
@@ -140,10 +157,25 @@ def _ensure_config_unused(config, label):
 
 
 class ProductionLine(models.Model):
+    class CounterBehavior(models.TextChoices):
+        UNCONFIRMED = "UNCONFIRMED", "غير مؤكد"
+        COUNTS_ALL_OUTPUT = "COUNTS_ALL_OUTPUT", "يعد جميع المنتوج (الجيد والهالك)"
+        COUNTS_GOOD_ONLY = "COUNTS_GOOD_ONLY", "يعد المنتوج الجيد فقط"
+
     code = models.SlugField("رمز خط الإنتاج", max_length=50, unique=True)
     name_ar = models.CharField("الاسم بالعربية", max_length=120)
     name_en = models.CharField("الاسم بالإنجليزية", max_length=120, blank=True)
     active = models.BooleanField("نشط", default=True)
+    counter_behavior = models.CharField(
+        "سلوك عدّاد الآلة",
+        max_length=20,
+        choices=CounterBehavior.choices,
+        default=CounterBehavior.UNCONFIRMED,
+        help_text=(
+            "ما الذي يعده عدّاد الآلة؛ يبقى «غير مؤكد» حتى يؤكد المالك السلوك، "
+            "وتُعرض قراءات العدّاد غير المؤكدة كقياس أولي لا كإنتاج جيد موثّق."
+        ),
+    )
 
     class Meta:
         ordering = ["code"]
@@ -440,11 +472,11 @@ class ProductionOrder(models.Model):
 
     @property
     def actual_good_base(self):
-        return self.results.aggregate(total=models.Sum("good_quantity_base"))["total"] or 0
+        return self.results.filter(correction__isnull=True).aggregate(total=models.Sum("good_quantity_base"))["total"] or 0
 
     @property
     def actual_scrap_base(self):
-        return self.results.aggregate(total=models.Sum("scrap_quantity_base"))["total"] or 0
+        return self.results.filter(correction__isnull=True).aggregate(total=models.Sum("scrap_quantity_base"))["total"] or 0
 
     @property
     def received_good_base(self):
@@ -541,16 +573,42 @@ class ProductionOrderOperation(models.Model):
 class MaterialIssue(models.Model):
     objects = MaterialIssueManager()
 
+    class CostSource(models.TextChoices):
+        LAST_PURCHASE_COST = "LAST_PURCHASE_COST", "آخر سعر شراء"
+        STANDARD_PRICE_FALLBACK = "STANDARD_PRICE_FALLBACK", "سعر قياسي احتياطي (يدوي)"
+        UNAVAILABLE = "UNAVAILABLE", "غير متاح"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.ForeignKey(ProductionOrder, on_delete=models.PROTECT, related_name="material_issues")
     requirement = models.ForeignKey(ProductionMaterialRequirement, on_delete=models.PROTECT, related_name="issues")
     reference = models.CharField("مرجع الصرف", max_length=100, unique=True)
+    roll_reference = models.CharField(
+        "مرجع الرول",
+        max_length=120,
+        blank=True,
+        help_text=(
+            "رقم/وسم الرول الفعلي وقت الصرف؛ يُدخل عند إنشاء الصرف فقط ويظل "
+            "مرجعًا وثائقيًا دون احتساب تلقائي للكميات."
+        ),
+    )
     movement = models.OneToOneField(StockMovement, on_delete=models.PROTECT, related_name="production_material_issue")
     quantity = models.DecimalField("الكمية المصروفة", max_digits=30, decimal_places=12)
     unit = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="production_material_issues")
     quantity_base = models.DecimalField("المصروف بالوحدة الأساسية", max_digits=30, decimal_places=12)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="production_material_issues")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Cost snapshot at issue time
+    unit_cost_snapshot = models.DecimalField(
+        "سعر الوحدة الأساسية وقت الصرف (ج.م)", max_digits=18, decimal_places=6,
+        null=True, blank=True,
+        help_text="لقطة من آخر سعر شراء (أو السعر القياسي الاحتياطي) وقت صرف المادة؛ null يعني غير متاح."
+    )
+    cost_source = models.CharField(
+        "مصدر تكلفة الصرف", max_length=30, choices=CostSource.choices,
+        null=True, blank=True,
+        help_text="من أين أُخذت تكلفة الوحدة: آخر سعر شراء، سعر قياسي احتياطي، أو غير متاح."
+    )
 
     class Meta:
         ordering = ["created_at", "pk"]
@@ -621,6 +679,9 @@ class ProductionResult(models.Model):
     notes = models.CharField("ملاحظات", max_length=240, blank=True)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="production_results")
     occurred_at = models.DateTimeField("تاريخ الإنتاج")
+    posted_at = models.DateTimeField(
+        "وقت تسجيل النظام", default=timezone.now, editable=False, blank=True, null=True
+    )
 
     class Meta:
         ordering = ["occurred_at", "pk"]
@@ -649,6 +710,86 @@ class ProductionResult(models.Model):
     def yield_percent(self):
         total = self.good_quantity_base + self.scrap_quantity_base
         return (self.good_quantity_base * 100 / total) if total else None
+
+
+class ProductionMaterialWaste(models.Model):
+    """Immutable measured raw-material waste, valued at its posting instant."""
+
+    objects = ImmutableProductionRecordManager()
+
+    class CostSource(models.TextChoices):
+        LAST_PURCHASE_COST = "LAST_PURCHASE_COST", "آخر سعر شراء وقت الترحيل"
+        STANDARD_PRICE_FALLBACK = "STANDARD_PRICE_FALLBACK", "سعر قياسي احتياطي مؤرخ"
+        UNAVAILABLE = "UNAVAILABLE", "غير متاح وقت الترحيل"
+
+    order = models.ForeignKey(ProductionOrder, on_delete=models.PROTECT, related_name="material_waste")
+    result = models.ForeignKey(ProductionResult, on_delete=models.PROTECT, related_name="material_waste")
+    material = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="production_waste")
+    material_issue = models.ForeignKey(
+        "MaterialIssue", on_delete=models.PROTECT, null=True, blank=True, related_name="waste_records"
+    )
+    roll_reference = models.CharField("مرجع الرول", max_length=120, blank=True)
+    quantity_base = models.DecimalField("الكمية التالفة بالوحدة الأساسية", max_digits=30, decimal_places=12)
+    unit_cost_snapshot = models.DecimalField("تكلفة الوحدة وقت الترحيل", max_digits=18, decimal_places=6, null=True, blank=True)
+    total_cost_snapshot = models.DecimalField("تكلفة الهالك وقت الترحيل", max_digits=18, decimal_places=2, null=True, blank=True)
+    cost_source = models.CharField(max_length=30, choices=CostSource.choices)
+    posted_at = models.DateTimeField("وقت الترحيل", auto_now_add=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="posted_production_waste")
+    reversal_of = models.OneToOneField("self", on_delete=models.PROTECT, null=True, blank=True, related_name="reversal")
+    correction_reason = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["posted_at", "pk"]
+        constraints = [models.CheckConstraint(condition=Q(quantity_base__gt=0), name="production_material_waste_positive")]
+        permissions = [("record_production_waste", "Can record measured production material waste")]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("سجل هالك المواد مرحّل وغير قابل للتعديل؛ استخدم العكس الموثق.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("سجل هالك المواد لا يُحذف؛ استخدم العكس الموثق.")
+
+
+class ProductionWasteReview(models.Model):
+    """Explicit evidence that a result's material damage review is complete."""
+
+    objects = ImmutableProductionRecordManager()
+
+    result = models.OneToOneField(ProductionResult, on_delete=models.PROTECT, related_name="waste_review")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="production_waste_reviews")
+    reviewed_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("مراجعة هالك المواد سجل ثابت.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("مراجعة هالك المواد لا تُحذف.")
+
+
+class ProductionResultReversal(models.Model):
+    """Audited full reversal; a corrected result is posted as a new result."""
+
+    objects = ImmutableProductionRecordManager()
+
+    result = models.OneToOneField(ProductionResult, on_delete=models.PROTECT, related_name="correction")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="production_result_reversals")
+    reversed_at = models.DateTimeField(auto_now_add=True)
+    reason = models.CharField(max_length=255)
+
+    class Meta:
+        permissions = [("correct_production_result", "Can correct or reverse production results")]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("عكس نتيجة الإنتاج سجل تدقيق غير قابل للتعديل.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("سجل عكس نتيجة الإنتاج لا يُحذف.")
 
 
 class FinishedGoodsReceipt(models.Model):
@@ -686,3 +827,257 @@ class FinishedGoodsReceipt(models.Model):
         if self._is_posted():
             raise ValidationError("استلام المنتج النهائي لا يُحذف؛ استخدم خدمة العكس.")
         return super().delete(*args, **kwargs)
+
+
+class MachineCounterReading(models.Model):
+    """Manual machine-counter interval entered by a worker.
+
+    The counter is read physically; no device integration exists. One record is
+    one measurement interval: ``counter_output = end_reading - start_reading``.
+    Readings never post stock movements or feed costing directly — the
+    authoritative production record remains ``ProductionResult`` — so editing a
+    reading can never silently change a finalized costing or profit period.
+    Corrections are allowed only through the audited service, which requires a
+    reason and stores the superseded values.
+    """
+
+    class Status(models.TextChoices):
+        PROVISIONAL = "PROVISIONAL", "مبدئي (بانتظار الإغلاق)"
+        COMPLETE = "COMPLETE", "مكتمل (بانتظار الاعتماد)"
+        APPROVED = "APPROVED", "معتمد"
+        CORRECTED = "CORRECTED", "مصحح (مجدول للاعتماد)"
+
+    order = models.ForeignKey(
+        ProductionOrder,
+        on_delete=models.PROTECT,
+        related_name="counter_readings",
+        verbose_name="أمر الإنتاج",
+    )
+    order_operation = models.ForeignKey(
+        ProductionOrderOperation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counter_readings",
+        verbose_name="مرحلة الإنتاج",
+    )
+    production_line = models.ForeignKey(
+        ProductionLine,
+        on_delete=models.PROTECT,
+        related_name="counter_readings",
+        verbose_name="خط الإنتاج / الآلة",
+    )
+    material_issue = models.ForeignKey(
+        MaterialIssue,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counter_readings",
+        verbose_name="صرف المادة المرتبط",
+        help_text="الصرف الذي وُزِّعت منه رولات هذه الفترة إن وُجد؛ للتتبع الجزئي للرول.",
+    )
+    roll_reference = models.CharField(
+        "مرجع الرول",
+        max_length=120,
+        blank=True,
+        help_text="وسم الرول المستخدم أثناء الفترة كما قرأه العامل.",
+    )
+    unit = models.ForeignKey(
+        UnitOfMeasure,
+        on_delete=models.PROTECT,
+        related_name="machine_counter_readings",
+        verbose_name="وحدة العدّ",
+    )
+    start_reading = models.DecimalField(
+        "قراءة العدّاد عند البداية",
+        max_digits=20,
+        decimal_places=4,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    end_reading = models.DecimalField(
+        "قراءة العدّاد عند النهاية",
+        max_digits=20,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    counter_output = models.DecimalField(
+        "ناتج العدّاد (النهاية − البداية)",
+        max_digits=20,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    counter_output_base = models.DecimalField(
+        "ناتج العدّاد بالوحدة الأساسية",
+        max_digits=30,
+        decimal_places=12,
+        null=True,
+        blank=True,
+    )
+    rejected_quantity = models.DecimalField(
+        "الكمية المرفوضة المسجلة",
+        max_digits=20,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="تُملأ عند الإغلاق إن لم يستبعدها العدّاد تلقائيًا؛ لا تتجاوز ناتج العدّاد.",
+    )
+    rejected_quantity_base = models.DecimalField(
+        "المرفوض بالوحدة الأساسية",
+        max_digits=30,
+        decimal_places=12,
+        null=True,
+        blank=True,
+    )
+    started_at = models.DateTimeField("وقت بدء القراءة")
+    ended_at = models.DateTimeField("وقت إغلاق القراءة", null=True, blank=True)
+    status = models.CharField(
+        "حالة القراءة",
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PROVISIONAL,
+        db_index=True,
+    )
+    notes = models.CharField("ملاحظات", max_length=240, blank=True)
+    entered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="counter_readings_entered",
+        verbose_name="أدخل القراءة",
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counter_readings_closed",
+        verbose_name="أغلق القراءة",
+    )
+    closed_at = models.DateTimeField("وقت الإغلاق", null=True, blank=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counter_readings_approved",
+        verbose_name="اعتمد القراءة",
+    )
+    approved_at = models.DateTimeField("وقت الاعتماد", null=True, blank=True)
+    correction_reason = models.CharField(
+        "آخر سبب تصحيح",
+        max_length=240,
+        blank=True,
+    )
+    corrected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counter_readings_corrected",
+        verbose_name="آخر مصحِّح",
+    )
+    corrected_at = models.DateTimeField("وقت آخر تصحيح", null=True, blank=True)
+    corrections = models.JSONField(
+        "سجل التصحيحات",
+        default=list,
+        blank=True,
+        help_text="قوائم التصحيحات السابقة: من/متى/سبب/القيم المستبدلة.",
+    )
+    continuation_of = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="continuations",
+        verbose_name="متابعة لقراءة سابقة",
+        help_text="يُملأ عند استمرار العدّاد بعد إعادة ضبط أو استبدال.",
+    )
+    reset_reason = models.CharField(
+        "سبب إعادة الضبط / الاستمرار",
+        max_length=240,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-started_at", "-pk"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(start_reading__gte=0),
+                name="counter_start_reading_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(end_reading__isnull=True) | Q(end_reading__gte=0),
+                name="counter_end_reading_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(rejected_quantity__isnull=True) | Q(rejected_quantity__gte=0),
+                name="counter_rejected_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(end_reading__isnull=True) | Q(end_reading__gte=F("start_reading")),
+                name="counter_output_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(rejected_quantity__isnull=True)
+                | Q(counter_output__isnull=True)
+                | Q(rejected_quantity__lte=F("counter_output")),
+                name="counter_rejected_within_output",
+            ),
+            models.CheckConstraint(
+                condition=Q(continuation_of__isnull=True) | ~Q(reset_reason=""),
+                name="counter_continuation_requires_reset_reason",
+            ),
+        ]
+        permissions = [
+            ("record_counter_reading", "Can record machine counter readings"),
+            ("approve_counter_reading", "Can approve machine counter readings"),
+            ("correct_counter_reading", "Can correct machine counter readings with a reason"),
+        ]
+        verbose_name = "قراءة عدّاد آلة"
+        verbose_name_plural = "قراءات عدّاد الآلة"
+
+    def _is_recorded(self):
+        return self.pk is not None
+
+    def save(self, *args, **kwargs):
+        # Recorded readings change only through the audited correction service,
+        # which sets `_allow_service_write` after validating the transition.
+        if self._is_recorded() and not getattr(self, "_allow_service_write", False):
+            raise ValidationError(
+                "قراءة العدّاد المسجلة لا تُعدَّل مباشرة؛ استخدم خدمة التصحيح "
+                "الإلزامية بسبب السبب والتوقيع الزمني."
+            )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self._is_recorded():
+            raise ValidationError(
+                "قراءات العدّاد لا تُحذف للحفاظ على سجل التدقيق؛ صحح عبر الخدمة الموثّقة."
+            )
+        return super().delete(*args, **kwargs)
+
+    @property
+    def is_closed(self):
+        return self.end_reading is not None and self.ended_at is not None
+
+    @property
+    def accepted_good_base(self):
+        """Accepted output per this interval: counter output minus rejected.
+
+        Only meaningful when the line's counter behavior confirms what the
+        counter counts; otherwise callers must label it provisional.
+        """
+        if self.counter_output_base is None:
+            return None
+        rejected = self.rejected_quantity_base or Decimal("0")
+        return self.counter_output_base - rejected
+
+    def __str__(self):
+        return (
+            f"عدّاد {self.order.order_number}: {self.start_reading}→"
+            f"{self.end_reading or '…'} ({self.get_status_display()})"
+        )

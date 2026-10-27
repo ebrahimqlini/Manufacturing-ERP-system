@@ -43,7 +43,7 @@
     {{ period.revenue|floatformat:2 }} − {{ period.cogs|floatformat:2 }} = {{ period.gross_profit|floatformat:2 }} ج.م (إجمالي الربح)
   </p>
   <p class="mb-1 ltr text-end">
-    {{ period.gross_profit|floatformat:2 }} − {{ period.operating_expenses_total|floatformat:2 }} = {{ period.monthly_result|floatformat:2 }} ج.م (نتيجة الشهر قبل تغطية الخسائر)
+    {{ period.gross_profit|floatformat:2 }} − {{ period.operating_expenses_total|floatformat:2 }}{% if period.separated_scrap_loss > 0 %} − {{ period.separated_scrap_loss|floatformat:2 }} (خسارة هالك مفصلة){% endif %} = {{ period.monthly_result|floatformat:2 }} ج.م (نتيجة الشهر قبل تغطية الخسائر)
   </p>
   <p class="mb-0 ltr text-end">
     {{ period.monthly_result|floatformat:2 }} − {{ period.loss_recovered|floatformat:2 }} = {{ period.profit_after_loss_recovery|floatformat:2 }} ج.م (الربح المتبقي بعد تغطية الخسائر)
@@ -51,6 +51,21 @@
   <p class="small text-muted mt-2 mb-0">
     «نتيجة الشهر» ليست صافي الربح النهائي. «الربح المتبقي بعد التغطية» هو ما يتبقى بعد استرداد خسائر سابقة فقط.
     الضرائب والتوزيعات والقيود المحاسبية خارج نطاق هذا الحساب.
+  </p>
+</div>
+
+<div class="card card-body shadow-sm mb-4">
+  <h2 class="h5">معالجة الهالك في النتيجة</h2>
+  <p class="mb-2"><strong>الحالة:</strong> {{ period.get_scrap_treatment_display }}</p>
+  <div class="row g-3">
+    <div class="col-md-3"><span class="text-muted small">خسارة هالك مفصلة مخصومة</span><strong class="ltr d-block">{{ period.separated_scrap_loss|floatformat:2 }} ج.م</strong></div>
+    <div class="col-md-3"><span class="text-muted small">تكلفة هالك محمّلة ضمن تكلفة الإنتاج (عرض فقط)</span><strong class="ltr d-block">{{ period.absorbed_scrap_cost|floatformat:2 }} ج.م</strong></div>
+    <div class="col-md-3"><span class="text-muted small">هالك غير محوَّل / غير مؤكد (غير مخصوم)</span><strong class="ltr d-block">{{ period.unreconciled_scrap_cost|floatformat:2 }} ج.م</strong></div>
+  </div>
+  <p class="small text-muted mt-2 mb-0">
+    الهالك المخصوم يُخصم مرة واحدة فقط من نتيجة الشهر، وكان مستبعدًا أصلًا من تكلفة الوحدات الجيدة وCOGS بسياسة فصل الهالك.
+    الهالك المحمّل ضمن تكلفة الوحدة لا يُخصم مرة أخرى (سيحدث احتساب مزدوج مع تكلفة البضاعة المباعة).
+    الهالك غير المحوَّل يظهر صراحةً ولا يُخصم حتى إكمال أوامر الإنتاج أو احتسابها.
   </p>
 </div>
 

@@ -178,3 +178,56 @@ class InventoryLock(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["product", "location"], name="unique_inventory_lock_pair")]
+
+
+class LastPurchaseCost(models.Model):
+    """Current last purchase cost per product (material).
+
+    Updated atomically when a priced purchase receipt is successfully posted.
+    Used by costing and waste valuation to fetch the latest applicable price.
+    """
+    product = models.OneToOneField(Product, on_delete=models.PROTECT, related_name="last_purchase_cost", verbose_name="الصنف")
+    price_per_base_unit = models.DecimalField("آخر سعر شراء للوحدة الأساسية (ج.م)", max_digits=18, decimal_places=6)
+    source_movement = models.ForeignKey(StockMovement, on_delete=models.PROTECT, related_name="last_purchase_cost_updates", verbose_name="حركة التوريد المرجعية")
+    updated_at = models.DateTimeField("وقت التحديث", auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="last_purchase_cost_updates", verbose_name="حدّث بواسطة")
+
+    class Meta:
+        verbose_name = "آخر سعر شراء"
+        verbose_name_plural = "آخر أسعار الشراء"
+
+    def __str__(self):
+        return f"{self.product.sku}: {self.price_per_base_unit} ج.م / {self.product.base_uom.code}"
+
+
+class LastPurchaseCostHistory(models.Model):
+    """Append-only history of last purchase cost changes for as-of valuation.
+
+    Each change (receipt, reversal) appends a row. Used for point-in-time
+    queries: latest row with effective_at <= target date.
+    """
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="last_purchase_cost_history", verbose_name="الصنف")
+    price_per_base_unit = models.DecimalField(
+        "سعر الوحدة الأساسية (ج.م)",
+        max_digits=18,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        help_text=(
+            "null تعني أنه لا يوجد سعر شراء صالح بعد عكس آخر استلام (وليس سعرًا "
+            "صفرًا)؛ تُقرأ كنقص تسعير لا كتكلفة مجانية."
+        ),
+    )
+    effective_at = models.DateTimeField("وقت السريان")
+    source_movement = models.ForeignKey(StockMovement, on_delete=models.PROTECT, related_name="last_purchase_cost_history", verbose_name="حركة التوريد")
+    change_reason = models.CharField("سبب التغيير", max_length=120, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["effective_at", "pk"]
+        indexes = [models.Index(fields=["product", "effective_at"])]
+        verbose_name = "تاريخ آخر سعر شراء"
+        verbose_name_plural = "تاريخ آخر أسعار الشراء"
+
+    def __str__(self):
+        return f"{self.product.sku} @ {self.effective_at:%Y-%m-%d %H:%M}: {self.price_per_base_unit}"
